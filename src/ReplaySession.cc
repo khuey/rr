@@ -1,6 +1,6 @@
 /* -*- Mode: C++; tab-width: 8; c-basic-offset: 2; indent-tabs-mode: nil; -*- */
 
-//#define DEBUGTAG "ReplaySession"
+#define DEBUGTAG "ReplaySession"
 #define USE_BREAKPOINT_TARGET 1
 #define USE_TIMESLICE_COALESCING 1
 
@@ -57,7 +57,7 @@ using namespace std;
  * perhaps pipeline depth and things of that nature are involved.  But
  * those reasons if they exit are currently not understood.
  */
-static const int SKID_SIZE = 70;
+static const int SKID_SIZE = 200;
 
 static void debug_memory(Task* t) {
   if (should_dump_memory(t, t->current_trace_frame())) {
@@ -69,6 +69,44 @@ static void debug_memory(Task* t) {
      * recording phase. */
     validate_process_memory(t, t->current_trace_frame().time());
   }
+}
+
+static bool is_x86ish(Task* t) {
+  return t->arch() == x86 || t->arch() == x86_64;
+}
+
+bool fast_forward_through_instruction(Task* t, ResumeRequest how,
+                                      const vector<const Registers*>& states) {
+  assert(how == RESUME_SINGLESTEP || how == RESUME_SYSEMU_SINGLESTEP);
+
+  remote_code_ptr ip = t->ip();
+
+  t->resume_execution(how, RESUME_WAIT);
+  if (t->pending_sig() != SIGTRAP) {
+    // we might have stepped into a system call...
+    return false;
+  }
+
+  if (t->ip() != ip) {
+    return false;
+  }
+  if (t->vm()->get_breakpoint_type_at_addr(ip) != TRAP_NONE) {
+    // breakpoint must have fired
+    return false;
+  }
+  if (t->vm()->notify_watchpoint_fired(t->debug_status())) {
+    // watchpoint fired
+    return false;
+  }
+  for (auto& state : states) {
+    if (state->matches(t->regs())) {
+      return false;
+    }
+  }
+  if (!is_x86ish(t)) {
+    return false;
+  }
+  assert(false);
 }
 
 ReplaySession::~ReplaySession() {
@@ -251,6 +289,7 @@ Completion ReplaySession::cont_syscall_boundary(
       ENTERING_SYSCALL == trace_frame.event().Syscall().state;
   if (is_syscall_entry) {
     t->stepped_into_syscall = false;
+    t->wanted_sysemu = false;
   }
 
   ResumeRequest resume_how;
@@ -288,8 +327,9 @@ Completion ReplaySession::cont_syscall_boundary(
        resume_how == RESUME_SINGLESTEP)) {
     // ignore ticks_period. We can't add more than one tick during a
     // fast_forward so it doesn't matter.
-    did_fast_forward |= fast_forward_through_instruction(
-        t, resume_how, constraints.stop_before_states);
+    assert(false);
+    //    did_fast_forward |= fast_forward_through_instruction(
+    //        t, resume_how, constraints.stop_before_states);
   } else {
     t->resume_execution(resume_how, RESUME_WAIT, 0, ticks_period);
   }
@@ -393,8 +433,9 @@ void ReplaySession::continue_or_step(Task* t,
   if (constraints.command == RUN_SINGLESTEP) {
     t->resume_execution(RESUME_SINGLESTEP, RESUME_WAIT, 0, tick_period);
   } else if (constraints.command == RUN_SINGLESTEP_FAST_FORWARD) {
-    did_fast_forward |= fast_forward_through_instruction(
-        t, RESUME_SINGLESTEP, constraints.stop_before_states);
+    assert(false);
+    //    did_fast_forward |= fast_forward_through_instruction(
+    //        t, RESUME_SINGLESTEP, constraints.stop_before_states);
   } else {
     /* We continue with RESUME_SYSCALL for error checking:
      * since the next event is supposed to be a signal,
@@ -420,7 +461,7 @@ static bool is_breakpoint_trap(Task* t) {
   /* XXX unable to find docs on which of these "should" be
    * right.  The SI_KERNEL code is seen in the int3 test, so we
    * at least need to handle that. */
-  return SI_KERNEL == si.si_code || TRAP_BRKPT == si.si_code;
+  return SI_KERNEL == si.si_code || TRAP_BRKPT == si.si_code || 4 == si.si_code;
 }
 
 /**
@@ -467,7 +508,8 @@ TrapType ReplaySession::compute_trap_type(Task* t, int target_sig,
    * replaying an async signal. */
 
   trap_type = t->vm()->get_breakpoint_type_for_retired_insn(t->ip());
-  if (TRAP_BKPT_USER == trap_type || TRAP_BKPT_INTERNAL == trap_type) {
+  if (TRAP_BKPT_USER == trap_type || TRAP_BKPT_INTERNAL == trap_type ||
+      TRAP_STEPI_INTERNAL_EMULATION == trap_type) {
     assert(is_breakpoint_trap(t));
     return trap_type;
   }
@@ -583,6 +625,7 @@ static bool is_same_execution_point(Task* t, const Registers& rec_regs,
       EXPECT_MISMATCHES
 #endif
       ;
+
   if (ticks_left > 0) {
     if (ticks_left <= ticks_slack &&
         Registers::compare_register_files(t, "(rep)", t->regs(), "(rec)",
@@ -598,7 +641,7 @@ static bool is_same_execution_point(Task* t, const Registers& rec_regs,
 #endif
     return false;
   }
-  if (ticks_left < -ticks_slack) {
+  if (abs(ticks_left) > ticks_slack) {
     LOG(debug) << "  not same execution point: " << ticks_left
                << " ticks left (@" << rec_regs.ip() << ")";
 #ifdef DEBUGTAG
@@ -611,6 +654,8 @@ static bool is_same_execution_point(Task* t, const Registers& rec_regs,
                                          behavior)) {
     LOG(debug) << "  not same execution point: regs differ (@" << rec_regs.ip()
                << ")";
+    Registers::compare_register_files(t, "(rep)", t->regs(), "(rec)", rec_regs,
+                                      LOG_MISMATCHES);
     return false;
   }
   LOG(debug) << "  same execution point";
@@ -622,6 +667,7 @@ Ticks ReplaySession::get_ticks_slack(Task* t) {
     // Somewhat arbitrary guess
     return 6;
   }
+  // 2 on QC hardware, 3 on ARM
   return 0;
 }
 
@@ -639,6 +685,7 @@ Completion ReplaySession::advance_to(Task* t, const Registers& regs, int sig,
                                      Ticks ticks) {
   pid_t tid = t->tid;
   remote_code_ptr ip = regs.ip();
+
   Ticks ticks_left;
   Ticks ticks_slack = get_ticks_slack(t);
   bool did_set_internal_breakpoint = false;
@@ -749,10 +796,10 @@ Completion ReplaySession::advance_to(Task* t, const Registers& regs, int sig,
           /* (The breakpoint would have trapped
            * at the $ip one byte beyond the
            * target.) */
-          assert(!at_target);
 
           t->child_sig = 0;
           t->move_ip_before_breakpoint();
+          if(at_target) break;
           /* We just backed up the $ip, but
            * rewound it over an |int $3|
            * instruction, which couldn't have
@@ -760,6 +807,13 @@ Completion ReplaySession::advance_to(Task* t, const Registers& regs, int sig,
            * to adjust |ticks_count()|. */
           continue;
         }
+        case TRAP_STEPI_INTERNAL_EMULATION:
+          /*
+           * We wanted to single step, but this architecture doesn't
+           * support that. Remove our breakpoints and then fall through.
+           */
+          t->vm()->clear_emulation_breakpoints();
+          // Fall through.
         case TRAP_NONE:
           /* Otherwise, we must have been forced
            * to single-step because the tracee's
@@ -808,7 +862,7 @@ Completion ReplaySession::advance_to(Task* t, const Registers& regs, int sig,
        * imprecise counters.  This should still be
        * no slower than single-stepping our way to
        * the target execution point. */
-      LOG(debug) << "    breaking on target $ip";
+      LOG(debug) << "    breaking on target $ip " << ip;
       t->vm()->add_breakpoint(ip, TRAP_BKPT_INTERNAL);
       did_set_internal_breakpoint = true;
       continue_or_step(t, constraints);
@@ -826,7 +880,7 @@ Completion ReplaySession::advance_to(Task* t, const Registers& regs, int sig,
         // count yet. But it doesn't hurt to push it on anyway.
         states.push_back(&regs);
         did_fast_forward |=
-            fast_forward_through_instruction(t, RESUME_SINGLESTEP, states);
+          fast_forward_through_instruction(t, RESUME_SINGLESTEP, states);
         check_pending_sig(t);
       }
     }
@@ -880,9 +934,11 @@ Completion ReplaySession::emulate_signal_delivery(
   // Entering a signal handler seems to clear FP/SSE registers for some
   // reason. So we saved those cleared values, and now we restore that
   // state so they're cleared during replay.
+  /*
   if (trace_frame.event().type() == EV_SIGNAL_HANDLER) {
+>>>>>>> arm fiddling
     t->set_extra_regs(trace_frame.extra_regs());
-  }
+    }*/
 
   /* Restore the signal-hander frame data, if there was one. */
   SignalDeterministic deterministic =
@@ -1116,7 +1172,7 @@ static void restore_futex_words(Task* t, const struct syscallbuf_record* rec) {
       << "Futex should have saved 4 or 8 bytes, but instead saved "
       << extra_data_size;
 
-  remote_ptr<int> child_uaddr = t->regs().arg1();
+  remote_ptr<int> child_uaddr = t->regs().original_arg1();
   auto rec_uaddr = *reinterpret_cast<const int*>(rec->extra_data);
   t->write_mem(child_uaddr, rec_uaddr);
 
@@ -1406,6 +1462,7 @@ static void exit_task(Task* t) {
 
   Registers r = t->regs();
   r.set_ip(t->vm()->traced_syscall_ip());
+  r.set_flags(r.flags() & 0xF9FF03DF);
   r.set_syscallno(syscall_number_for_exit(t->arch()));
   t->set_regs(r);
   // Enter the syscall.
@@ -1434,8 +1491,8 @@ void ReplaySession::setup_replay_one_trace_frame(Task* t) {
   const Event& ev = trace_frame.event();
 
   LOG(debug) << "[line " << trace_frame.time() << "] " << t->rec_tid
-             << ": replaying " << Event(ev) << "; state "
-             << state_name(ev.Syscall().state);
+             << ": replaying " << Event(ev) << "; state ";
+    // << state_name(ev.Syscall().state);
   if (t->syscallbuf_hdr) {
     LOG(debug) << "    (syscllbufsz:" << t->syscallbuf_hdr->num_rec_bytes
                << ", abrtcmt:" << bool(t->syscallbuf_hdr->abort_commit)
@@ -1607,7 +1664,9 @@ ReplayResult ReplaySession::replay_step(const StepConstraints& constraints) {
   result.did_fast_forward = did_fast_forward;
 
   if (TSTEP_ENTER_SYSCALL == current_step.action) {
+#if !defined(__arm__)
     cpuid_bug_detector.notify_reached_syscall_during_replay(t);
+#endif
   }
 
   const Event& ev = trace_frame.event();

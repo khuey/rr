@@ -7,6 +7,8 @@ import string
 import sys
 import syscalls
 
+SUPPORTED_ARCHES = [("X86Arch", "x86"), ("X64Arch", "x64"), ("ARMArch", "ARM")]
+
 def write_syscall_enum(f, arch):
     f.write("enum Syscalls {\n")
     undefined_syscall = -1
@@ -43,7 +45,7 @@ def write_is_always_emulated_syscall(f):
 
     f.write("template <typename Arch> static bool is_always_emulated_syscall_arch(int syscall);\n");
     f.write("\n");
-    for specializer, arch in [("X86Arch", "x86"), ("X64Arch", "x64")]:
+    for specializer, arch in SUPPORTED_ARCHES:
         f.write("template<> bool is_always_emulated_syscall_arch<%s>(int syscallno) {\n" % specializer)
         f.write("  switch (syscallno) {\n")
         for name, obj in syscalls.all():
@@ -59,7 +61,7 @@ def write_is_always_emulated_syscall(f):
 def write_syscallname_arch(f):
     f.write("template <typename Arch> static std::string syscallname_arch(int syscall);\n")
     f.write("\n");
-    for specializer, arch in [("X86Arch", "x86"), ("X64Arch", "x64")]:
+    for specializer, arch in SUPPORTED_ARCHES:
         f.write("template <> std::string syscallname_arch<%s>(int syscall) {\n" % specializer)
         f.write("  switch (syscall) {\n");
         def write_case(name):
@@ -97,6 +99,8 @@ has_${syscall}_syscall(SupportedArch arch) {
       return X86Arch::${syscall} >= 0;
     case x86_64:
       return X64Arch::${syscall} >= 0;
+    case ARM:
+      return ARMArch::${syscall} >= 0;
     default:
       assert(0 && "unsupported architecture");
   }  
@@ -110,6 +114,8 @@ is_${syscall}_syscall(int syscallno, SupportedArch arch) {
       return syscallno >= 0 && syscallno == X86Arch::${syscall};
     case x86_64:
       return syscallno >= 0 && syscallno == X64Arch::${syscall};
+    case ARM:
+      return syscallno >= 0 && syscallno == ARMArch::${syscall};
     default:
       assert(0 && "unsupported architecture");
  }
@@ -125,6 +131,9 @@ syscall_number_for_${syscall}(SupportedArch arch) {
     case x86_64:
       assert(X64Arch::${syscall} >= 0);
       return X64Arch::${syscall};
+    case ARM:
+      assert(ARMArch::${syscall} >= 0);
+      return ARMArch::${syscall};
     default:
       assert(0 && "unsupported architecture");
   }
@@ -142,7 +151,7 @@ def write_syscall_helper_functions(f):
         write_helpers(name)
 
 def write_syscall_defs_table(f):
-    for specializer, arch in [("X86Arch", "x86"), ("X64Arch", "x64")]:
+    for specializer, arch in SUPPORTED_ARCHES:
         f.write("template<> syscall_defs<%s>::Table syscall_defs<%s>::table = {\n"
                 % (specializer, specializer))
         arch_syscalls = sorted(syscalls.for_arch(arch), key=lambda x: getattr(x[1], arch))
@@ -172,8 +181,10 @@ generators_for = {
     'SyscallDefsTable': write_syscall_defs_table,
     'SyscallEnumsX86': lambda f: write_syscall_enum(f, 'x86'),
     'SyscallEnumsX64': lambda f: write_syscall_enum(f, 'x64'),
+    'SyscallEnumsARM': lambda f: write_syscall_enum(f, 'ARM'),
     'SyscallEnumsForTestsX86': lambda f: write_syscall_enum_for_tests(f, 'x86'),
     'SyscallEnumsForTestsX64': lambda f: write_syscall_enum_for_tests(f, 'x64'),
+    'SyscallEnumsForTestsARM': lambda f: write_syscall_enum_for_tests(f, 'ARM'),
     'SyscallnameArch': write_syscallname_arch,
     'SyscallRecordCase': write_syscall_record_cases,
     'SyscallHelperFunctions': write_syscall_helper_functions,

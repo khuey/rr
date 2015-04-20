@@ -32,20 +32,42 @@ public:
   }
   intptr_t operator-(remote_code_ptr other) const { return ptr - other.ptr; }
 
+  remote_code_ptr& operator+=(intptr_t delta) {
+    ptr += delta;
+    return *this;
+  }
+
+
   // XXXkhuey this is somewhat arbitrary
   bool operator<(const remote_code_ptr& other) const { return ptr < other.ptr; }
 
   remote_code_ptr decrement_by_syscall_insn_length(SupportedArch arch) const {
-    return remote_code_ptr(ptr - rr::syscall_instruction_length(arch));
+    if (!!(ptr & 0x1)) {
+      // Thumb
+      return remote_code_ptr(ptr - 2);
+    }
+    return remote_code_ptr(ptr - 4);
   }
   remote_code_ptr increment_by_syscall_insn_length(SupportedArch arch) const {
-    return remote_code_ptr(ptr + rr::syscall_instruction_length(arch));
+    if (!!(ptr & 0x1)) {
+      // Thumb
+      return remote_code_ptr(ptr + 2);
+    }
+    return remote_code_ptr(ptr + 4);
   }
   remote_code_ptr decrement_by_bkpt_insn_length(SupportedArch arch) const {
-    return remote_code_ptr(ptr - 1);
+    if (!!(ptr & 0x1)) {
+      // Thumb
+      return remote_code_ptr(ptr - 2);
+    }
+    return remote_code_ptr(ptr - 4);
   }
   remote_code_ptr increment_by_bkpt_insn_length(SupportedArch arch) const {
-    return remote_code_ptr(ptr + 1);
+    if (!!(ptr & 0x1)) {
+      // Thumb
+      return remote_code_ptr(ptr + 2);
+    }
+    return remote_code_ptr(ptr + 4);
   }
 
   template <typename T> remote_ptr<T> to_data_ptr() const {
@@ -59,7 +81,9 @@ public:
 private:
   // Return the integer value for this pointer viewed as a data pointer.
   // A no-op on Intel architectures, will mask off the thumb bit on ARM.
-  uintptr_t to_data_ptr_value() const { return ptr; }
+  uintptr_t to_data_ptr_value() const {
+    return ptr & ~0x1;
+  }
 
   uintptr_t ptr;
 };

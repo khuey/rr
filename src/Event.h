@@ -71,13 +71,15 @@ enum HasExecInfo {
  */
 union EncodedEvent {
   struct {
+    int data : 24;
     EventType type : 5;
     bool is_syscall_entry : 1;
     HasExecInfo has_exec_info : 1;
-    SupportedArch arch_ : 1;
-    int data : 24;
+    int padding1 : 1;
+    SupportedArch arch_ : 2;
+    int padding2 : 30;
   };
-  int encoded;
+  int64_t encoded;
 
   bool operator==(const EncodedEvent& other) const {
     return encoded == other.encoded;
@@ -87,7 +89,8 @@ union EncodedEvent {
   SupportedArch arch() const { return arch_; }
 };
 
-static_assert(sizeof(int) == sizeof(EncodedEvent), "Bit fields are messed up");
+static_assert(sizeof(int64_t) == sizeof(EncodedEvent), "Bit fields are messed up");
+static_assert(sizeof(EncodedEvent) == sizeof(EncodedEvent::encoded), "encoded is messed up");
 static_assert(EV_LAST < (1 << 5), "Allocate more bits to the |type| field");
 
 /**

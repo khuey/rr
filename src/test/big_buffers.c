@@ -61,7 +61,7 @@ int main(int argc, char* argv[]) {
     /* Big recvmmsg() buffer. */
     data.iov_base = "bar";
     data.iov_len = 3;
-    test_assert(1 == sendmmsg(sockfds[0], &mmsg, 1, 0));
+    //    test_assert(1 == sendmmsg(sockfds[0], &mmsg, 1, 0));
 
     data.iov_base = buf;
     data.iov_len = BUF_SIZE;

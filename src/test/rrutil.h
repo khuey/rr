@@ -68,12 +68,16 @@
 #include <time.h>
 #include <unistd.h>
 #include <utime.h>
-#include <x86intrin.h>
+//#include <x86intrin.h>
+
+#define PAGE_SIZE 4096
 
 #if defined(__i386__)
 #include "SyscallEnumsForTestsX86.generated"
 #elif defined(__x86_64__)
 #include "SyscallEnumsForTestsX64.generated"
+#elif defined(__arm__)
+#include "SyscallEnumsForTestsARM.generated"
 #else
 #error Unknown architecture
 #endif
@@ -112,7 +116,7 @@ inline static int atomic_puts(const char* str) {
 }
 
 #define fprintf(...) USE_dont_write_stderr
-#define printf(...) USE_atomic_printf_INSTEAD
+//#define printf(...) USE_atomic_printf_INSTEAD
 #define puts(...) USE_atomic_puts_INSTEAD
 
 inline static int check_cond(int cond) {
@@ -141,7 +145,13 @@ inline static void check_data(void* buf, size_t len) {
 /**
  * Return the current value of the time-stamp counter.
  */
-inline static uint64_t rdtsc(void) { return __rdtsc(); }
+inline static uint64_t rdtsc(void) {
+#if !defined(__arm__)
+  return __rdtsc();
+#else
+  return 0;
+#endif
+}
 
 static uint64_t GUARD_VALUE = 0xdeadbeeff00dbaad;
 

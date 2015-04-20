@@ -7,7 +7,7 @@ static sig_atomic_t caught_usr1;
 static void handle_usr1(int sig) {
   test_assert(SIGUSR1 == sig);
   caught_usr1 = 1;
-  atomic_puts("caught usr1");
+  printf("caught usr1");
 }
 
 static void breakpoint(void) {
@@ -26,6 +26,6 @@ int main(int argc, char* argv[]) {
     dummy += (dummy + i) % 9735;
   }
 
-  atomic_puts("EXIT-SUCCESS");
+  printf("EXIT-SUCCESS");
   return 0;
 }

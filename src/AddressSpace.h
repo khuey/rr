@@ -4,6 +4,7 @@
 #define RR_ADDRESS_SPACE_H_
 
 #include <inttypes.h>
+#include <asm/mman.h>
 #include <sys/mman.h>
 
 #include <map>
@@ -189,7 +190,7 @@ struct Mapping {
 
   void assert_valid() const {
     assert(end >= start);
-    assert(num_bytes() % page_size() == 0);
+    //    assert(num_bytes() % page_size() == 0);
     assert(!(flags & ~map_flags_mask));
     assert(offset % page_size() == 0);
   }
@@ -380,6 +381,7 @@ enum TrapType {
   TRAP_BKPT_INTERNAL,
   // Trap on behalf of a debugger user.
   TRAP_BKPT_USER,
+  TRAP_STEPI_INTERNAL_EMULATION,
 };
 
 enum WatchType {
@@ -576,12 +578,18 @@ public:
 
   /** Ensure a breakpoint of |type| is set at |addr|. */
   bool add_breakpoint(remote_code_ptr addr, TrapType type);
+
   /**
    * Remove a |type| reference to the breakpoint at |addr|.  If
    * the removed reference was the last, the breakpoint is
    * destroyed.
    */
   void remove_breakpoint(remote_code_ptr addr, TrapType type);
+
+  void clear_emulation_breakpoints();
+
+  std::vector<remote_code_ptr> emu_breakpoints;
+
   /**
    * Destroy all breakpoints in this VM, regardless of their
    * reference counts.
@@ -656,7 +664,11 @@ public:
   bool has_watchpoints() { return !watchpoints.empty(); }
 
   // Encoding of the |int $3| instruction.
+#if defined (__arm__)
+  static const uint8_t breakpoint_insn[4];
+#else
   static const uint8_t breakpoint_insn = 0xCC;
+#endif
 
   ScopedFd& mem_fd() { return child_mem_fd; }
   void set_mem_fd(ScopedFd&& fd) { child_mem_fd = std::move(fd); }
@@ -713,15 +725,13 @@ public:
    * ip() of the untraced traced system call instruction.
    */
   remote_code_ptr rr_page_untraced_syscall_ip(SupportedArch arch) {
-    return rr_page_ip_in_untraced_syscall().decrement_by_syscall_insn_length(
-        arch);
+    return rr_page_ip_in_untraced_syscall().decrement_by_syscall_insn_length(arch);
   }
   /**
    * ip() of the traced traced system call instruction.
    */
   remote_code_ptr rr_page_traced_syscall_ip(SupportedArch arch) {
-    return rr_page_ip_in_traced_syscall().decrement_by_syscall_insn_length(
-        arch);
+    return rr_page_ip_in_traced_syscall().decrement_by_syscall_insn_length(arch);
   }
 
   /**
@@ -833,7 +843,7 @@ private:
   struct Breakpoint {
     Breakpoint() : internal_count(0), user_count(0) {}
     Breakpoint(const Breakpoint& o) = default;
-    // AddressSpace::destroy_all_breakpoints() can cause this
+    // AddressSpace::remove_all_breakpoints() can cause this
     // destructor to be invoked while we have nonzero total
     // refcount, so the most we can assert is that the refcounts
     // are valid.
@@ -859,20 +869,23 @@ private:
       return user_count > 0 ? TRAP_BKPT_USER : TRAP_BKPT_INTERNAL;
     }
 
-    size_t data_length() { return 1; }
-    uint8_t* original_data() { return &overwritten_data; }
+    size_t data_length() const { return ARM ? 4 : 2; }
+    const uint8_t* original_data() const { return &overwritten_data[0]; }
 
     // "Refcounts" of breakpoints set at |addr|.  The breakpoint
     // object must be unique since we have to save the overwritten
     // data, and we can't enforce the order in which breakpoints
     // are set/removed.
+    bool ARM;
     int internal_count, user_count;
-    uint8_t overwritten_data;
+    uint8_t overwritten_data[4];
     static_assert(sizeof(overwritten_data) ==
                       sizeof(AddressSpace::breakpoint_insn),
                   "Must have the same size.");
 
     int* counter(TrapType which) {
+      if (which == TRAP_STEPI_INTERNAL_EMULATION)
+        which = TRAP_BKPT_INTERNAL;
       assert(TRAP_BKPT_INTERNAL == which || TRAP_BKPT_USER == which);
       int* p = TRAP_BKPT_USER == which ? &user_count : &internal_count;
       assert(*p >= 0);

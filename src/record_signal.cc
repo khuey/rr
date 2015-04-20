@@ -13,7 +13,9 @@
 #include <syscall.h>
 #include <sys/mman.h>
 #include <sys/user.h>
+#if !defined(__arm__)
 #include <x86intrin.h>
+#endif
 
 #include "preload/preload_interface.h"
 
@@ -30,9 +32,10 @@
 using namespace rr;
 using namespace std;
 
-static __inline__ unsigned long long rdtsc(void) { return __rdtsc(); }
-
 static const int STOPSIG_SYSCALL = 0x80 | SIGTRAP;
+
+#if !defined(__arm__)
+static __inline__ unsigned long long rdtsc(void) { return __rdtsc(); }
 
 template <typename Arch> static size_t sigaction_sigset_size_arch() {
   return Arch::sigaction_sigset_size;
@@ -117,6 +120,7 @@ static bool try_handle_rdtsc(Task* t, siginfo_t* si) {
   LOG(debug) << "  trapped for rdtsc: returning " << current_time;
   return true;
 }
+#endif
 
 void disarm_desched_event(Task* t) {
   if (ioctl(t->desched_fd, PERF_EVENT_IOC_DISABLE, 0)) {
@@ -316,8 +320,8 @@ static void handle_desched_event(Task* t, const siginfo_t* si) {
    * encounter this problem.
    */
   int call = t->desched_rec()->syscallno;
-  ev.regs.set_original_syscallno(call);
-  t->set_regs(ev.regs);
+  //ev.regs.set_original_syscallno(call);
+  //  t->set_regs(ev.regs);
   ev.state = EXITING_SYSCALL;
 
   LOG(debug) << "  resuming (and probably switching out) blocked `"
@@ -385,9 +389,11 @@ SignalHandled handle_signal(Task* t, siginfo_t* si) {
    * and fudge t appropriately. */
   switch (si->si_signo) {
     case SIGSEGV:
+#if !defined(__arm__)
       if (try_handle_rdtsc(t, si)) {
         return SIGNAL_HANDLED;
       }
+#endif
       break;
 
     case PerfCounters::TIME_SLICE_SIGNAL:

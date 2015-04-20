@@ -1,11 +1,13 @@
 /* -*- Mode: C++; tab-width: 8; c-basic-offset: 2; indent-tabs-mode: nil; -*- */
 
-//#define DEBUGTAG "ProcessSyscallRec"
+///#define DEBUGTAG "ProcessSyscallRec"
 
 #include "record_syscall.h"
 
 #include <arpa/inet.h>
+#if !defined(__arm__)
 #include <asm/ldt.h>
+#endif
 #include <assert.h>
 #include <elf.h>
 #include <errno.h>
@@ -514,6 +516,8 @@ remote_ptr<void> TaskSyscallState::reg_parameter(int arg, const ParamSize& size,
 
   MemoryParam param;
   param.dest = t->regs().arg(arg);
+  if (arg == 1)
+    param.dest = t->regs().original_arg1();
   if (param.dest.is_null()) {
     return remote_ptr<void>();
   }
@@ -672,7 +676,8 @@ void TaskSyscallState::process_syscall_results() {
     // Step 2: restore modified in-memory pointers and registers
     for (size_t i = 0; i < param_list.size(); ++i) {
       auto& param = param_list[i];
-      if (param.ptr_in_reg) {
+      // XXXkhuey don't overwrite the syscall result on ARM.
+      if (param.ptr_in_reg > 1) {
         r.set_arg(param.ptr_in_reg, param.dest.as_int());
       }
       if (!param.ptr_in_memory.is_null()) {
@@ -1275,7 +1280,8 @@ static void maybe_pause_instead_of_waiting(Task* t) {
   // It would be nice if we didn't have to do this, but I can't see a better
   // way.
   Registers r = t->regs();
-  r.set_original_syscallno(syscall_number_for_pause(t->arch()));
+  assert(false);
+  //  r.set_original_syscallno(syscall_number_for_pause(t->arch()));
   t->set_regs(r);
 }
 
@@ -1294,7 +1300,7 @@ static void prepare_ptrace_cont(Task* tracee, int sig) {
   ASSERT(tracee, !sig) << "PTRACE_CONT with signal not supported yet";
   tracee->emulated_stop_type = NOT_STOPPED;
 }
-
+/*
 static uint64_t widen_buffer_unsigned(const void* buf, size_t size) {
   switch (size) {
     case 1:
@@ -1326,7 +1332,7 @@ static int64_t widen_buffer_signed(const void* buf, size_t size) {
       return 0;
   }
 }
-
+*/
 static uint64_t path_inode_number(const char* path) {
   struct stat st;
   int ret = stat(path, &st);
@@ -1406,7 +1412,7 @@ static Switchable prepare_ptrace(Task* t, TaskSyscallState& syscall_state) {
       }
       break;
     }
-    case PTRACE_GETFPXREGS: {
+      /*    case PTRACE_GETFPXREGS: {
       if (Arch::arch() != x86) {
         // GETFPXREGS is x86-32 only
         syscall_state.expect_errno = EIO;
@@ -1421,7 +1427,7 @@ static Switchable prepare_ptrace(Task* t, TaskSyscallState& syscall_state) {
         syscall_state.emulate_result(0);
       }
       break;
-    }
+      }*/
     case PTRACE_PEEKTEXT:
     case PTRACE_PEEKDATA: {
       Task* tracee = verify_ptrace_target(t, syscall_state, pid);
@@ -1438,7 +1444,7 @@ static Switchable prepare_ptrace(Task* t, TaskSyscallState& syscall_state) {
       }
       break;
     }
-    case PTRACE_PEEKUSER: {
+      /*    case PTRACE_PEEKUSER: {
       Task* tracee = verify_ptrace_target(t, syscall_state, pid);
       if (tracee) {
         // The actual syscall returns the data via the 'data' out-parameter.
@@ -1483,7 +1489,7 @@ static Switchable prepare_ptrace(Task* t, TaskSyscallState& syscall_state) {
         syscall_state.emulate_result(0);
       }
       break;
-    }
+      }*/
     case PTRACE_CONT: {
       Task* tracee = verify_ptrace_target(t, syscall_state, pid);
       if (tracee) {
@@ -1551,7 +1557,8 @@ static void destroy_buffers(Task* t) {
   // So hijack this SYS_exit call and rewrite it into a harmless
   // one that we can exit successfully, SYS_gettid here (though
   // that choice is arbitrary).
-  exit_regs.set_original_syscallno(syscall_number_for_gettid(t->arch()));
+  t->xptrace(/* PTRACE_SET_SYSCALL = */ 23, nullptr, (void*)syscall_number_for_gettid(t->arch()));
+  //  exit_regs.set_original_syscallno(syscall_number_for_gettid(t->arch()));
   t->set_regs(exit_regs);
   // This exits the hijacked SYS_gettid.  Now the tracee is
   // ready to do our bidding.
@@ -1560,9 +1567,10 @@ static void destroy_buffers(Task* t) {
   // Restore these regs to what they would have been just before
   // the tracee trapped at SYS_exit.  When we've finished
   // cleanup, we'll restart the SYS_exit call.
-  exit_regs.set_original_syscallno(-1);
-  exit_regs.set_syscallno(syscall_number_for_exit(t->arch()));
-  exit_regs.set_ip(exit_regs.ip() - syscall_instruction_length(t->arch()));
+  t->xptrace(/* PTRACE_SET_SYSCALL = */ 23, nullptr, (void*)syscall_number_for_exit(t->arch()));
+  //  exit_regs.set_original_syscallno(-1);
+  //  exit_regs.set_syscallno(syscall_number_for_exit(t->arch()));
+  exit_regs.set_ip(exit_regs.ip().decrement_by_syscall_insn_length(t->arch()));
   ASSERT(t, is_at_syscall_instruction(t, exit_regs.ip()))
       << "Tracee should have entered through int $0x80.";
 
@@ -1635,7 +1643,7 @@ static Switchable rec_prepare_syscall_arch(Task* t,
     case Arch::exit:
       t->stable_exit = true;
       if (t->task_group()->task_set().size() == 1) {
-        t->task_group()->exit_code = (int)t->regs().arg1();
+        t->task_group()->exit_code = (int)t->regs().original_arg1();
       }
       destroy_buffers(t);
       return PREVENT_SWITCH;
@@ -1644,7 +1652,7 @@ static Switchable rec_prepare_syscall_arch(Task* t,
       if (t->task_group()->task_set().size() == 1) {
         t->stable_exit = true;
       }
-      t->task_group()->exit_code = (int)t->regs().arg1();
+      t->task_group()->exit_code = (int)t->regs().original_arg1();
       return PREVENT_SWITCH;
 
     case Arch::execve: {
@@ -1976,8 +1984,9 @@ static Switchable rec_prepare_syscall_arch(Task* t,
       // We could record a little less data by restricting the recorded data
       // to the syscall result * sizeof(Arch::legacy_gid_t), but that would
       // require more infrastructure and it's not worth worrying about.
-      syscall_state.reg_parameter(2, (int)t->regs().arg1_signed() *
-                                         sizeof(typename Arch::legacy_gid_t));
+      assert(false);
+      //      syscall_state.reg_parameter(2, (int)t->regs().arg1_signed() *
+      //                                         sizeof(typename Arch::legacy_gid_t));
       return PREVENT_SWITCH;
     }
 
@@ -2027,7 +2036,7 @@ static Switchable rec_prepare_syscall_arch(Task* t,
       if (syscallno == Arch::wait4) {
         syscall_state.reg_parameter<typename Arch::rusage>(4);
       }
-      pid_t pid = (pid_t)t->regs().arg1_signed();
+      pid_t pid = (pid_t)t->regs().original_arg1_signed();
       if (pid < -1) {
         t->in_wait_type = WAIT_TYPE_PGID;
         t->in_wait_pid = -pid;
@@ -2124,6 +2133,7 @@ static Switchable rec_prepare_syscall_arch(Task* t,
       if ((int)t->regs().arg1() == RR_RESERVED_ROOT_DIR_FD) {
         // Don't let processes close this fd. Abort with EBADF by setting
         // oldfd to -1, as if the fd is already closed.
+        LOG(debug) << "oh god forbid it";
         Registers r = t->regs();
         r.set_arg1(intptr_t(-1));
         t->set_regs(r);
@@ -2356,6 +2366,7 @@ static Switchable rec_prepare_syscall_arch(Task* t,
 
     case Arch::vfork: {
       Registers r = t->regs();
+      t->xptrace(/* PTRACE_SET_SYSCALL = */ 23, nullptr, (void*)Arch::fork);
       r.set_original_syscallno(Arch::fork);
       t->set_regs(r);
       return PREVENT_SWITCH;
@@ -2460,8 +2471,7 @@ static void rec_prepare_restart_syscall_arch(Task* t,
     case Arch::waitid:
     case Arch::waitpid: {
       Registers r = t->regs();
-      r.set_original_syscallno(
-          syscall_state.syscall_entry_registers->original_syscallno());
+      r.set_original_syscallno(syscall_state.syscall_entry_registers->original_syscallno());
       t->set_regs(r);
       t->in_wait_type = WAIT_TYPE_NONE;
       break;
@@ -2561,6 +2571,14 @@ const unsigned int elf_auxv_ordering<X64Arch>::keys[] = {
 };
 template <>
 const size_t elf_auxv_ordering<X64Arch>::keys_length = array_length(keys);
+
+template <>
+const unsigned int elf_auxv_ordering<ARMArch>::keys[] = {
+  AT_HWCAP,  AT_PAGESZ, AT_CLKTCK,   AT_PHDR, AT_PHENT, AT_PHNUM, AT_BASE,
+  AT_FLAGS,  AT_ENTRY,  AT_UID,      AT_EUID, AT_GID,   AT_EGID,  AT_SECURE
+};
+template <>
+const size_t elf_auxv_ordering<ARMArch>::keys_length = array_length(keys);
 
 template <typename Arch>
 static void process_execve(Task* t, TaskSyscallState& syscall_state) {
@@ -2748,9 +2766,9 @@ static void process_fork(Task* t, TaskSyscallState& syscall_state) {
 template <typename Arch>
 static void process_clone(Task* t, TaskSyscallState& syscall_state) {
   uintptr_t flags = syscall_state.syscall_entry_registers->arg1();
-  Registers r = t->regs();
-  r.set_arg1(flags);
-  t->set_regs(r);
+  //  Registers r = t->regs();
+  //  r.set_arg1(flags);
+  //  t->set_regs(r);
 
   if (t->regs().syscall_result_signed() < 0) {
     // clone failed.
@@ -2789,16 +2807,17 @@ static void process_clone(Task* t, TaskSyscallState& syscall_state) {
   t->record_remote_even_if_null(parent_tid_in_parent);
 
   if (Arch::clone_tls_type == Arch::UserDescPointer) {
+    /*
     t->record_remote_even_if_null(
         tls_in_parent.cast<typename Arch::user_desc>());
     new_task->record_remote_even_if_null(
         tls_in_child.cast<typename Arch::user_desc>());
+    */
   } else {
     assert(Arch::clone_tls_type == Arch::PthreadStructurePointer);
   }
   new_task->record_remote_even_if_null(parent_tid_in_child);
   new_task->record_remote_even_if_null(child_tid_in_child);
-
   new_task->pop_syscall();
 
   t->record_session().trace_writer().write_task_event(
@@ -2862,8 +2881,8 @@ static string extra_expected_errno_info(Task* t,
     case EIO:
       switch (t->regs().original_syscallno()) {
         case Arch::ptrace:
-          ss << "; unsupported ptrace(" << HEX((int)t->regs().arg1()) << " ["
-             << ptrace_req_name((int)t->regs().arg1_signed()) << "])";
+          ss << "; unsupported ptrace(" << HEX((int)t->regs().original_arg1()) << " ["
+             << ptrace_req_name((int)t->regs().original_arg1_signed()) << "])";
           break;
       }
       break;
@@ -2975,7 +2994,7 @@ static void rec_process_syscall_arch(Task* t, TaskSyscallState& syscall_state) {
     }
 
     case Arch::open: {
-      string pathname = t->read_c_str(remote_ptr<void>(t->regs().arg1()));
+      string pathname = t->read_c_str(remote_ptr<void>(t->regs().original_arg1()));
       if (is_blacklisted_filename(pathname.c_str())) {
         /* NB: the file will still be open in the
          * process's file table, but let's hope this
@@ -3009,12 +3028,11 @@ static void rec_process_syscall_arch(Task* t, TaskSyscallState& syscall_state) {
       t->in_wait_type = WAIT_TYPE_NONE;
       // Restore possibly-modified registers
       Registers r = t->regs();
-      r.set_arg1(syscall_state.syscall_entry_registers->arg1());
+      //r.set_arg1(syscall_state.syscall_entry_registers->arg1());
       r.set_arg2(syscall_state.syscall_entry_registers->arg2());
       r.set_arg3(syscall_state.syscall_entry_registers->arg3());
       r.set_arg4(syscall_state.syscall_entry_registers->arg4());
-      r.set_original_syscallno(
-          syscall_state.syscall_entry_registers->original_syscallno());
+      r.set_original_syscallno(syscall_state.syscall_entry_registers->original_syscallno());
       t->set_regs(r);
 
       if (syscall_state.ptraced_tracee) {
@@ -3060,9 +3078,13 @@ static void rec_process_syscall_arch(Task* t, TaskSyscallState& syscall_state) {
     case Arch::fcntl:
     case Arch::fcntl64: {
       // Restore arg1 in case we modified it to disable the syscall
+      // XXXkhuey on ARM the syscall result clobbers the first arg.
+      // Winning!
+#if !defined(__arm__)
       Registers r = t->regs();
       r.set_arg1(syscall_state.syscall_entry_registers->arg1());
       t->set_regs(r);
+#endif
       break;
     }
 

@@ -1,6 +1,6 @@
 /* -*- Mode: C++; tab-width: 8; c-basic-offset: 2; indent-tabs-mode: nil; -*- */
 
-//#define DEBUGTAG "RemoteSyscalls"
+#define DEBUGTAG "RemoteSyscalls"
 
 #include "AutoRemoteSyscalls.h"
 
@@ -52,15 +52,36 @@ AutoRestoreMem::~AutoRestoreMem() {
 
 AutoRemoteSyscalls::AutoRemoteSyscalls(Task* t)
     : t(t),
+      using_buf(false),
       initial_regs(t->regs()),
+      initial_flags(t->regs().flags()),
       initial_ip(t->ip()),
       initial_sp(t->regs().sp()),
       pending_syscallno(-1) {
-  initial_regs.set_ip(t->vm()->traced_syscall_ip());
+  remote_code_ptr traced_ip = t->vm()->traced_syscall_ip();
+  if (traced_ip != remote_code_ptr()) {
+    LOG(debug) << "Using traced ip";
+    initial_regs.set_ip(traced_ip);
+    initial_regs.set_flags(initial_regs.flags() & 0xF9FF03DF);  
+  } else {
+    using_buf = true;
+    t->read_bytes(initial_ip.to_data_ptr<uint8_t>(), code_buffer);
+    // ARM or thumb
+    if (t->current_instruction_set() == ARM_IA) {
+      LOG(debug) << "Injecting ARM syscall";
+      static const uint8_t arm_syscall[] = { 0x00, 0x00, 0x00, 0xef };
+      t->write_bytes(initial_ip.to_data_ptr<uint8_t>(), arm_syscall);
+    } else {
+      LOG(debug) << "Injecting thumb syscall";
+      static const uint8_t thumb_syscall[] = { 0x00, 0xdf, 0x00, 0xdf};
+      t->write_bytes(initial_ip.to_data_ptr<uint8_t>(), thumb_syscall);
+    }
+  }
   maybe_fix_stack_pointer();
 }
 
 void AutoRemoteSyscalls::maybe_fix_stack_pointer() {
+  return;
   if (!t->session().can_validate()) {
     return;
   }
@@ -88,9 +109,15 @@ void AutoRemoteSyscalls::maybe_fix_stack_pointer() {
   initial_regs.set_sp(found_stack.end);
 }
 
-AutoRemoteSyscalls::~AutoRemoteSyscalls() { restore_state_to(t); }
+AutoRemoteSyscalls::~AutoRemoteSyscalls() {
+  restore_state_to(t);
+}
 
 void AutoRemoteSyscalls::restore_state_to(Task* t) {
+  if (using_buf) {
+    t->write_bytes(initial_ip.to_data_ptr<uint8_t>(), code_buffer);
+  }
+  initial_regs.set_flags(initial_flags);
   initial_regs.set_ip(initial_ip);
   initial_regs.set_sp(initial_sp);
   // Restore stomped registers.
@@ -110,14 +137,23 @@ static void advance_syscall(Task* t) {
 
 long AutoRemoteSyscalls::syscall_helper(SyscallWaiting wait, int syscallno,
                                         Registers& callregs) {
+  LOG(debug) << "Making syscall " << syscallno;
   callregs.set_syscallno(syscallno);
   t->set_regs(callregs);
 
   advance_syscall(t);
 
-  ASSERT(t, t->regs().ip() - callregs.ip() ==
-                syscall_instruction_length(t->arch()))
-      << "Should have advanced ip by one syscall_insn";
+  uint8_t bytes[12];
+  t->read_bytes(callregs.ip().to_data_ptr<uint8_t>() - 4, bytes);
+
+  t->hpc.note_extraneous_ticks(PerfCounters::REMOTE_SYSCALL);
+
+  ASSERT(t, t->regs().ip() - callregs.ip() <= 4);
+         //                syscall_instruction_length(t->arch()))
+
+  /*  ASSERT(t, (t->current_instruction_set() == ARM_IA && diff == 4) ||
+         (t->current_instruction_set() == THUMB_IA && diff == 2))
+         << "Should have advanced ip by one syscall_insn";*/
 
   ASSERT(t, t->regs().original_syscallno() == syscallno)
       << "Should be entering " << t->syscall_name(syscallno)

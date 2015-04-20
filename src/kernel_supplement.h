@@ -3,7 +3,7 @@
 #ifndef RR_KERNEL_SUPPLEMENT_H_
 #define RR_KERNEL_SUPPLEMENT_H_
 
-#include <sys/ptrace.h>
+#include <linux/ptrace.h>
 
 /* Definitions that should be part of system headers (and maybe are on some but
  * not all systems).
@@ -12,7 +12,7 @@
  */
 
 #define PTRACE_EVENT_NONE 0
-#define PTRACE_EVENT_STOP 128
+//#define PTRACE_EVENT_STOP 128
 
 #define PTRACE_SYSEMU 31
 #define PTRACE_SYSEMU_SINGLESTEP 32

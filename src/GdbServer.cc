@@ -450,11 +450,12 @@ void GdbServer::dispatch_debugger_request(Session& session, Task* t,
     case DREQ_SET_SW_BREAK: {
       ASSERT(target, (req.mem.len == sizeof(AddressSpace::breakpoint_insn)))
           << "Debugger setting bad breakpoint insn";
+      assert(false);/*
       bool ok =
           &session == &timeline.current_session()
               ? timeline.add_breakpoint(target, req.mem.addr)
               : target->vm()->add_breakpoint(req.mem.addr, TRAP_BKPT_USER);
-      dbg->reply_watchpoint_request(ok);
+              dbg->reply_watchpoint_request(ok);*/
       return;
     }
     case DREQ_REMOVE_SW_BREAK:

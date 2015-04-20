@@ -10,7 +10,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <sys/types.h>
-
+#include "remote_ptr.h"
 #include "ScopedFd.h"
 #include "Ticks.h"
 
@@ -36,7 +36,7 @@ public:
 
   // Change this to 'true' to enable perf counters that may be interesting
   // for experimentation, but aren't necessary for core functionality.
-  static bool extra_perf_counters_enabled() { return false; }
+  static bool extra_perf_counters_enabled() { return true; }
 
   /**
    * Reset all counter values to 0 and program the counters to send
@@ -63,6 +63,13 @@ public:
    */
   int ticks_fd() const { return fd_ticks; }
 
+  enum ExtraneousTickType {
+    BREAKPOINT,
+    REMOTE_SYSCALL,
+  };
+
+  void note_extraneous_ticks(ExtraneousTickType type);
+
   /* This choice is fairly arbitrary; linux doesn't use SIGSTKFLT so we
    * hope that tracees don't either. */
   enum {
@@ -81,6 +88,7 @@ public:
 private:
   pid_t tid;
   ScopedFd fd_ticks;
+  uint64_t tick_adjust_count;
   ScopedFd fd_page_faults;
   ScopedFd fd_hw_interrupts;
   ScopedFd fd_instructions_retired;

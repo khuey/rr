@@ -1,5 +1,7 @@
 /* -*- Mode: C++; tab-width: 8; c-basic-offset: 2; indent-tabs-mode: nil; -*- */
 
+#define DEBUGTAG "PerfCounters"
+
 #include "PerfCounters.h"
 
 #include <assert.h>
@@ -21,6 +23,7 @@
 #include "util.h"
 
 using namespace std;
+using namespace rr;
 
 static bool attributes_initialized;
 static struct perf_event_attr ticks_attr;
@@ -34,6 +37,7 @@ static struct perf_event_attr instructions_retired_attr;
  * Another list at
  * http://software.intel.com/en-us/articles/intel-architecture-and-processor-identification-with-cpuid-model-and-family-numbers
  */
+
 enum CpuMicroarch {
   UnknownCpu,
   IntelMerom,
@@ -43,59 +47,16 @@ enum CpuMicroarch {
   IntelSandyBridge,
   IntelIvyBridge,
   IntelHaswell,
-  IntelBroadwell
+  IntelBroadwell,
+  QualcommKrait,
 };
 
-struct PmuConfig {
-  CpuMicroarch uarch;
-  const char* name;
-  unsigned rcb_cntr_event;
-  unsigned rinsn_cntr_event;
-  unsigned hw_intr_cntr_event;
-  bool supported;
-};
+template <typename Arch>
+CpuMicroarch detect_cpu_microarch();
 
-// XXX please only edit this if you really know what you're doing.
-static const PmuConfig
-pmu_configs[] = { { IntelBroadwell, "Intel Broadwell", 0x5101c4,
-                    0x5100c0,       0x5301cb,          true },
-                  { IntelHaswell, "Intel Haswell", 0x5101c4,
-                    0x5100c0,     0x5301cb,        true },
-                  { IntelIvyBridge, "Intel Ivy Bridge", 0x5101c4,
-                    0x5100c0,       0x5301cb,           true },
-                  { IntelSandyBridge, "Intel Sandy Bridge", 0x5101c4,
-                    0x5100c0,         0x5301cb,             true },
-                  { IntelNehalem, "Intel Nehalem", 0x5101c4,
-                    0x5100c0,     0x50011d,        true },
-                  { IntelWestmere, "Intel Westmere", 0x5101c4,
-                    0x5100c0,      0x50011d,         true },
-                  { IntelPenryn, "Intel Penryn", 0, 0, 0, false },
-                  { IntelMerom, "Intel Merom", 0, 0, 0, false }, };
-
-static string lowercase(const string& s) {
-  string c = s;
-  transform(c.begin(), c.end(), c.begin(), ::tolower);
-  return c;
-}
-
-/**
- * Return the detected, known microarchitecture of this CPU, or don't
- * return; i.e. never return UnknownCpu.
- */
-static CpuMicroarch get_cpu_microarch() {
-  string forced_uarch = lowercase(Flags::get().forced_uarch);
-  if (!forced_uarch.empty()) {
-    for (size_t i = 0; i < array_length(pmu_configs); ++i) {
-      const PmuConfig& pmu = pmu_configs[i];
-      string name = lowercase(pmu.name);
-      if (name.npos != name.find(forced_uarch)) {
-        LOG(info) << "Using forced uarch " << pmu.name;
-        return pmu.uarch;
-      }
-    }
-    FATAL() << "Forced uarch " << Flags::get().forced_uarch << " isn't known.";
-  }
-
+#if defined(INTEL_ARCHITECTURE)
+template <>
+CpuMicroarch detect_cpu_microarch<X86Arch>() {
   unsigned int cpu_type, eax, ecx, edx;
   cpuid(CPUID_GETFEATURES, 0, &eax, &ecx, &edx);
   cpu_type = (eax & 0xF0FF0);
@@ -132,6 +93,66 @@ static CpuMicroarch get_cpu_microarch() {
       FATAL() << "CPU " << HEX(cpu_type) << " unknown.";
       return UnknownCpu; // not reached
   }
+}
+#endif
+
+template<>
+CpuMicroarch detect_cpu_microarch<ARMArch>() {
+  return QualcommKrait;
+}
+
+struct PmuConfig {
+  CpuMicroarch uarch;
+  const char* name;
+  unsigned rcb_cntr_event;
+  unsigned rinsn_cntr_event;
+  unsigned hw_intr_cntr_event;
+  bool supported;
+};
+
+// XXX please only edit this if you really know what you're doing.
+static const PmuConfig
+pmu_configs[] = { { IntelBroadwell, "Intel Broadwell", 0x5101c4,
+                    0x5100c0,       0x5301cb,          true },
+                  { IntelHaswell, "Intel Haswell", 0x5101c4,
+                    0x5100c0,     0x5301cb,        true },
+                  { IntelIvyBridge, "Intel Ivy Bridge", 0x5101c4,
+                    0x5100c0,       0x5301cb,           true },
+                  { IntelSandyBridge, "Intel Sandy Bridge", 0x5101c4,
+                    0x5100c0,         0x5301cb,             true },
+                  { IntelNehalem, "Intel Nehalem", 0x5101c4,
+                    0x5100c0,     0x50011d,        true },
+                  { IntelWestmere, "Intel Westmere", 0x5101c4,
+                    0x5100c0,      0x50011d,         true },
+                  { IntelPenryn, "Intel Penryn", 0, 0, 0, false },
+                  { IntelMerom, "Intel Merom", 0, 0, 0, false },
+                  { QualcommKrait, "Qualcomm Krait", 0x13, 0x08, 0x09, true } };
+
+static string lowercase(const string& s) {
+  string c = s;
+  transform(c.begin(), c.end(), c.begin(), ::tolower);
+  return c;
+}
+
+/**
+ * Return the detected, known microarchitecture of this CPU, or don't
+ * return; i.e. never return UnknownCpu.
+ */
+static CpuMicroarch get_cpu_microarch() {
+  string forced_uarch = lowercase(Flags::get().forced_uarch);
+  if (!forced_uarch.empty()) {
+    for (size_t i = 0; i < array_length(pmu_configs); ++i) {
+      const PmuConfig& pmu = pmu_configs[i];
+      string name = lowercase(pmu.name);
+      if (name.npos != name.find(forced_uarch)) {
+        LOG(info) << "Using forced uarch " << pmu.name;
+        return pmu.uarch;
+      }
+    }
+    FATAL() << "Forced uarch " << Flags::get().forced_uarch << " isn't known.";
+  }
+
+  RR_NATIVE_ARCH_FUNCTION(detect_cpu_microarch);
 }
 
 static void init_perf_event_attr(struct perf_event_attr* attr,
@@ -178,7 +199,7 @@ static void init_attributes() {
                        PERF_COUNT_SW_PAGE_FAULTS);
 }
 
-PerfCounters::PerfCounters(pid_t tid) : tid(tid), started(false) {
+PerfCounters::PerfCounters(pid_t tid) : tid(tid), tick_adjust_count(-10), started(false) {
   init_attributes();
 }
 
@@ -195,6 +216,8 @@ static ScopedFd start_counter(pid_t tid, int group_fd,
 }
 
 void PerfCounters::reset(Ticks ticks_period) {
+  LOG(debug) << "Counter reset";
+
   stop();
 
   struct perf_event_attr attr = ticks_attr;
@@ -244,7 +267,10 @@ static int64_t read_counter(ScopedFd& fd) {
 }
 
 Ticks PerfCounters::read_ticks() {
-  return started ? read_counter(fd_ticks) : 0;
+  Ticks retval = started ? read_counter(fd_ticks) - tick_adjust_count : 0;
+  LOG(debug) << "Consuming " << tick_adjust_count << " extraneous ticks";
+  tick_adjust_count = 0;
+  return retval;
 }
 
 PerfCounters::Extra PerfCounters::read_extra() {
@@ -255,8 +281,15 @@ PerfCounters::Extra PerfCounters::read_extra() {
     extra.page_faults = read_counter(fd_page_faults);
     extra.hw_interrupts = read_counter(fd_hw_interrupts);
     extra.instructions_retired = read_counter(fd_instructions_retired);
+    LOG(debug) << "reading extra pf " << extra.page_faults << " hw " << extra.hw_interrupts;
   } else {
     memset(&extra, 0, sizeof(extra));
   }
   return extra;
+}
+
+void PerfCounters::note_extraneous_ticks(ExtraneousTickType type) {
+  LOG(debug) << "Noting extraneous tick";
+
+  //  tick_adjust_count++;
 }

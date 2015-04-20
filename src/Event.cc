@@ -307,6 +307,9 @@ void Event::transform(EventType new_type) {
     default:
       FATAL() << "Can't transform immutable " << *this << " into " << new_type;
   }
+
+  LOG(debug) << "Transforming event " << event_type << " into " << new_type;
+
   event_type = new_type;
 }
 

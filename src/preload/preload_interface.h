@@ -90,9 +90,13 @@
  * Each instance of this struct describes an instruction that can follow a
  * syscall and a hook function to patch with.
  */
+const uint8_t FLAG_NO_RESTORE_REGISTER = 1;
+
 struct syscall_patch_hook {
+  uint8_t flags;
   uint8_t next_instruction_length;
-  uint8_t next_instruction_bytes[6];
+  uint8_t next_instruction_bytes[16];
+  uint8_t next_instruction_mask_bytes[16];
   uint64_t hook_address;
 };
 

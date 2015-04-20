@@ -181,7 +181,8 @@ bool fast_forward_through_instruction(Task* t, ResumeRequest how,
   if (!is_x86ish(t)) {
     return false;
   }
-
+  assert(false);
+  /*
   InstructionBuf instruction_buf = read_instruction(t, ip);
   DecodedInstruction decoded;
   if (!decode_x86_string_instruction(instruction_buf, &decoded)) {
@@ -373,6 +374,7 @@ bool fast_forward_through_instruction(Task* t, ResumeRequest how,
       return did_execute;
     }
   }
+  */
 }
 
 static bool is_ignorable_prefix(Task* t, uint8_t byte) {

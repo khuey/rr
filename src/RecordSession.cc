@@ -120,7 +120,7 @@ bool RecordSession::handle_ptrace_event(Task* t, StepState* step_state) {
              << ": event " << t->ev();
 
   switch (event) {
-    case PTRACE_EVENT_SECCOMP_OBSOLETE:
+    //   case PTRACE_EVENT_SECCOMP_OBSOLETE:
     case PTRACE_EVENT_SECCOMP:
       t->seccomp_bpf_enabled = true;
       if (t->get_ptrace_eventmsg_seccomp_data() == SECCOMP_RET_DATA) {
@@ -159,7 +159,8 @@ bool RecordSession::handle_ptrace_event(Task* t, StepState* step_state) {
 
         Registers r = t->regs();
         // Cause kernel processing to skip the syscall
-        r.set_original_syscallno(-1);
+        assert(false);
+        //        r.set_original_syscallno(-1);
         r.set_syscall_result(-t->get_ptrace_eventmsg_seccomp_data());
         t->set_regs(r);
         // Don't continue yet. At the next iteration of record_step, if we
@@ -179,7 +180,7 @@ bool RecordSession::handle_ptrace_event(Task* t, StepState* step_state) {
       // copy, so the flags here aren't meaningful for it.
       unsigned long flags_arg =
           is_clone_syscall(t->regs().original_syscallno(), t->arch())
-              ? t->regs().arg1()
+              ? t->regs().original_arg1()
               : 0;
 
       // Ideally we'd just use t->get_ptrace_eventmsg_pid() here, but
@@ -407,7 +408,8 @@ static bool maybe_restart_syscall(Task* t) {
   if (t->is_syscall_restart()) {
     t->ev().transform(EV_SYSCALL);
     Registers regs = t->regs();
-    regs.set_original_syscallno(t->ev().Syscall().regs.original_syscallno());
+    assert(regs.original_syscallno() == t->ev().Syscall().regs.original_syscallno());
+    //    regs.set_original_syscallno(t->ev().Syscall().regs.original_syscallno());
     t->set_regs(regs);
     return true;
   }
@@ -449,7 +451,7 @@ static void maybe_discard_syscall_interruption(Task* t, int ret) {
  * syscall number) from |from| to |to|.
  */
 static void copy_syscall_arg_regs(Registers* to, const Registers& from) {
-  to->set_arg1(from.arg1());
+  //  to->set_arg1(from.arg1());
   to->set_arg2(from.arg2());
   to->set_arg3(from.arg3());
   to->set_arg4(from.arg4());
@@ -529,7 +531,9 @@ void RecordSession::syscall_state_changed(Task* t, StepState* step_state) {
       // take this opportunity to possibly pop an
       // interrupted-syscall event.
       if (is_sigreturn(syscallno, t->arch())) {
-        ASSERT(t, t->regs().original_syscallno() == -1);
+        // XXXkhuey bogus on ARM. If we interrupted a syscall original_syscallno
+        // has that syscallno.
+        //        ASSERT(t, t->regs().original_syscallno() == -1);
         t->record_current_event();
         t->pop_syscall();
 
@@ -537,6 +541,8 @@ void RecordSession::syscall_state_changed(Task* t, StepState* step_state) {
         t->pop_signal_handler();
         t->record_event(Event(EV_EXIT_SIGHANDLER, NO_EXEC_INFO, t->arch()));
 
+        // Get the correct syscall number
+        retval = t->regs().original_syscallno();
         maybe_discard_syscall_interruption(t, retval);
 
         if (EV_DESCHED == t->ev().type()) {
@@ -596,6 +602,7 @@ void RecordSession::syscall_state_changed(Task* t, StepState* step_state) {
        * event stack until the execution point where it
        * might be restarted. */
       if (!may_restart) {
+        LOG(debug) << "Not restarting syscall";
         t->pop_syscall();
         if (EV_DESCHED == t->ev().type()) {
           LOG(debug) << "  exiting desched critical section";
@@ -680,7 +687,7 @@ static void inject_signal(Task* t) {
      */
     while (true) {
       auto old_ip = t->ip();
-      t->cont_singlestep();
+      t->cont_syscall();
       ASSERT(t, old_ip == t->ip());
       ASSERT(t, t->pending_sig());
       if (t->pending_sig() == sig) {
@@ -710,7 +717,8 @@ static void inject_signal(Task* t) {
    */
   LOG(debug) << "    injecting signal number " << t->ev().Signal().siginfo;
   t->set_siginfo(t->ev().Signal().siginfo);
-  t->cont_singlestep(sig);
+  t->enter_signal_handler(sig);
+  //  t->cont_singlestep(sig);
   ASSERT(t, t->pending_sig() == SIGTRAP);
   ASSERT(t, t->get_signal_user_handler(sig) == t->ip());
 

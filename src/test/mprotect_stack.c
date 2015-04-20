@@ -2,6 +2,8 @@
 
 #include "rrutil.h"
 
+#include <asm/mman.h>
+
 int main(int argc, char* argv[]) {
   size_t page_size = sysconf(_SC_PAGESIZE);
   uint8_t* map1 = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,

@@ -180,6 +180,11 @@ enum EmulatedStopType {
   SIGNAL_DELIVERY_STOP // Stopped before delivering a signal. ptracees only.
 };
 
+enum InstructionSet {
+  THUMB_IA,
+  ARM_IA
+};
+
 /**
  * A "task" is a task in the linux usage: the unit of scheduling.  (OS
  * people sometimes call this a "thread control block".)  Multiple
@@ -195,6 +200,8 @@ class Task {
   friend class ReplaySession;
 
 public:
+  InstructionSet current_instruction_set() const;
+
   typedef std::vector<WatchConfig> DebugRegs;
 
   ~Task();
@@ -548,8 +555,7 @@ public:
    * ip() is immediately after the syscall instruction.
    */
   bool is_in_traced_syscall() {
-    return ip() ==
-           as->traced_syscall_ip().increment_by_syscall_insn_length(arch());
+    return ip() == as->traced_syscall_ip().increment_by_syscall_insn_length(arch());
   }
 
   /**
@@ -560,8 +566,7 @@ public:
    * instruction.
    */
   bool is_in_untraced_syscall() {
-    return ip() ==
-           as->untraced_syscall_ip().increment_by_syscall_insn_length(arch());
+    return ip() == as->untraced_syscall_ip().increment_by_syscall_insn_length(arch());
   }
 
   /**
@@ -878,8 +883,10 @@ public:
   size_t robust_list_len() const { return robust_futex_list_len; }
 
   /** Update the thread area to |addr|. */
+#if !defined(__arm__)
   void set_thread_area(remote_ptr<void> tls);
   const struct user_desc* tls() const;
+#endif
 
   /** Update the clear-tid futex to |tid_addr|. */
   void set_tid_addr(remote_ptr<int> tid_addr);
@@ -904,6 +911,8 @@ public:
    * user handler, otherwise return null.
    */
   remote_code_ptr get_signal_user_handler(int sig) const;
+
+  void enter_signal_handler(int sig);
 
   /**
    * Return |sig|'s current sigaction. Returned as raw bytes since the
@@ -1283,6 +1292,9 @@ public:
   // PTRACE_SYSCALL when instead we wanted to use
   // PTRACE_SINGLESTEP.  See replayer.cc.
   bool stepped_into_syscall;
+  // True when we had to use PTRACE_SYSCALL when instead we wanted to use
+  // PTRACE_SYSEMU
+  bool wanted_sysemu;
 
   /* State used during both recording and replay. */
 
@@ -1304,6 +1316,8 @@ public:
 
   PropertyTable& properties() { return properties_; }
 
+  bool emulating_single_stepping;
+
   struct CapturedState {
     pid_t rec_tid;
     uint32_t serial;
@@ -1312,8 +1326,10 @@ public:
     std::string prname;
     remote_ptr<void> robust_futex_list;
     size_t robust_futex_list_len;
+#if !defined(__arm__)
     struct user_desc thread_area;
     bool thread_area_valid;
+#endif
     size_t num_syscallbuf_bytes;
     int desched_fd_child;
     remote_ptr<struct syscallbuf_hdr> syscallbuf_child;
@@ -1385,8 +1401,10 @@ private:
    * Make the ptrace |request| with |addr| and |data|, return
    * the ptrace return value.
    */
+public:
   long fallible_ptrace(int request, remote_ptr<void> addr, void* data);
 
+private:
   /**
    * Like |fallible_ptrace()| but infallible for most purposes.
    * Errors other than ESRCH are treated as fatal. Returns false if
@@ -1399,7 +1417,15 @@ private:
    * Like |fallible_ptrace()| but completely infallible.
    * All errors are treated as fatal.
    */
+public:
   void xptrace(int request, remote_ptr<void> addr, void* data);
+
+private:
+
+  /**
+   * Refresh the registers via ptrace.
+   */
+  bool update_registers();
 
   /**
    * Read tracee memory using PTRACE_PEEKDATA calls. Slow, only use
@@ -1536,9 +1562,11 @@ private:
   std::deque<StashedSignal> stashed_signals;
   // The task group this belongs to.
   std::shared_ptr<TaskGroup> tg;
+#if !defined(__arm__)
   // Contents of the |tls| argument passed to |clone()| and
   // |set_thread_area()|, when |thread_area_valid| is true.
   struct user_desc thread_area;
+#endif
   bool thread_area_valid;
   // The memory cell the kernel will clear and notify on exit,
   // if our clone parent requested it.

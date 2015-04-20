@@ -210,7 +210,10 @@ private:
   template <typename Arch> ScopedFd retrieve_fd_arch(int fd);
 
   Task* t;
+  bool using_buf;
+  uint8_t code_buffer[4];
   Registers initial_regs;
+  uintptr_t initial_flags;
   remote_code_ptr initial_ip;
   remote_ptr<void> initial_sp;
   int pending_syscallno;

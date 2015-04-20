@@ -4,8 +4,9 @@
 
 #include <assert.h>
 #include <errno.h>
-#include <sys/ptrace.h>
 #include <signal.h>
+#include <sys/ptrace.h>
+#include <linux/ptrace.h>
 #include <syscall.h>
 
 #include "kernel_abi.h"
@@ -36,7 +37,7 @@ const char* ptrace_event_name(int event) {
     /* XXX Ubuntu 12.04 defines a "PTRACE_EVENT_STOP", but that
      * has the same value as the newer EVENT_SECCOMP, so we'll
      * ignore STOP. */
-    CASE(PTRACE_EVENT_SECCOMP_OBSOLETE);
+    //    CASE(PTRACE_EVENT_SECCOMP_OBSOLETE);
     CASE(PTRACE_EVENT_SECCOMP);
     CASE(PTRACE_EVENT_STOP);
     default:

@@ -610,6 +610,7 @@ void resize_shmem_segment(ScopedFd& fd, size_t num_bytes) {
   }
 }
 
+#if !defined(__arm__)
 void cpuid(int code, int subrequest, unsigned int* a, unsigned int* c,
            unsigned int* d) {
   asm volatile("cpuid"
@@ -617,6 +618,7 @@ void cpuid(int code, int subrequest, unsigned int* a, unsigned int* c,
                : "a"(code), "c"(subrequest)
                : "ebx");
 }
+#endif
 
 void set_cpu_affinity(int cpu) {
   assert(cpu >= 0);

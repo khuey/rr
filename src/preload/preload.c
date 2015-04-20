@@ -257,6 +257,9 @@ static int update_errno_ret(long ret) {
 
 #if defined(__i386__) || defined(__x86_64__)
 #define SYSCALL_INSTRUCTION_LENGTH 2
+#elif defined(__arm__)
+// XXXkhuey not right, maybe
+#define SYSCALL_INSTRUCTION_LENGTH 4
 #else
 #error define syscall instruction length here
 #endif
@@ -618,6 +621,37 @@ static void __attribute__((constructor)) init_process(void) {
       (uintptr_t)_syscall_hook_trampoline_48_8b_3c_24 },
     /* Our VDSO vsyscall patches have 'syscall' followed by "nop; nop; nop" */
     { 3, { 0x90, 0x90, 0x90 }, (uintptr_t)_syscall_hook_trampoline_90_90_90 }
+  };
+  params.syscall_patch_hook_count =
+      sizeof(syscall_patch_hooks) / sizeof(syscall_patch_hooks[0]);
+  params.syscall_patch_hooks = syscall_patch_hooks;
+#elif defined(__arm__)
+  extern RR_HIDDEN void _syscall_hook_trampoline_80_bc_10_f5_80_5f_38_bf_70_47_xx_fx_xx_xx(void);
+  extern RR_HIDDEN void _syscall_hook_trampoline_80_bd_af_f3_00_80_af_f3_00_80(void);
+  extern RR_HIDDEN void _syscall_hook_trampoline_07_46_60_46_xx_fx_xx_cx_38_46_5d_f8_04_eb(void);
+  struct syscall_patch_hook syscall_patch_hooks[] = {
+    /* Many glibc syscall wrappers (e.g. read) have 'svc' followed by
+     * pop r7; cmn.w r0, #4096; it cc; bxcc lr; b.w <offset>*/
+    { .flags = 0,
+      .next_instruction_length = 14,
+      .next_instruction_bytes = { 0x80, 0xbc, 0x10, 0xf5, 0x80, 0x5f, 0x38, 0xbf, 0x70, 0x47, 0x00, 0xf0, 0x00, 0x90},
+      .next_instruction_mask_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0xf8, 0x00, 0xd0},
+      .hook_address = (uintptr_t)_syscall_hook_trampoline_80_bc_10_f5_80_5f_38_bf_70_47_xx_fx_xx_xx },
+    /* There's also some sort of "fast" syscall wrapper, which is svc followed
+     * by pop r7, pc; nop; nop*/
+    { .flags = 0,
+      .next_instruction_length = 10,
+      .next_instruction_bytes = { 0x80, 0xbd, 0xaf, 0xf3, 0x00, 0x80, 0xaf, 0xf3, 0x00, 0x80},
+      .next_instruction_mask_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
+      .hook_address = (uintptr_t)_syscall_hook_trampoline_80_bd_af_f3_00_80_af_f3_00_80 },
+    /* Some syscalls are followed by mov r7, r0; mov r0, ip; bl offset; mov r0, r7; ldr.w lr, [sp], #4 */
+    {
+      .flags = FLAG_NO_RESTORE_REGISTER,
+      .next_instruction_length = 14,
+      .next_instruction_bytes = { 0x07, 0x46, 0x60, 0x46, 0x00, 0xf0, 0x00, 0xc0, 0x38, 0x46, 0x5d, 0xf8, 0x04, 0xeb},
+      .next_instruction_mask_bytes = { 0xff, 0xff, 0xff, 0xff, 0x00, 0xf8, 0x00, 0xc0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
+      .hook_address = (uintptr_t)_syscall_hook_trampoline_07_46_60_46_xx_fx_xx_cx_38_46_5d_f8_04_eb,
+    },
   };
   params.syscall_patch_hook_count =
       sizeof(syscall_patch_hooks) / sizeof(syscall_patch_hooks[0]);
@@ -1564,6 +1598,7 @@ static long sys_socketcall(const struct syscall_info* call) {
 }
 #endif
 
+#if !defined(__arm__)
 static long sys_time(const struct syscall_info* call) {
   const int syscallno = SYS_time;
   time_t* tp = (time_t*)call->args[0];
@@ -1583,6 +1618,7 @@ static long sys_time(const struct syscall_info* call) {
   }
   return commit_raw_syscall(syscallno, ptr, ret);
 }
+#endif
 
 static long sys_xstat64(const struct syscall_info* call) {
   const int syscallno = call->no;
@@ -1696,7 +1732,9 @@ static long syscall_hook_internal(const struct syscall_info* call) {
 #if defined(SYS_socketcall)
     CASE(socketcall);
 #endif
+#if !defined(__arm__)
     CASE(time);
+#endif
     CASE(write);
     CASE(writev);
 #undef CASE

@@ -1,6 +1,6 @@
 /* -*- Mode: C++; tab-width: 8; c-basic-offset: 2; indent-tabs-mode: nil; -*- */
 
-//#define DEBUGTAG "registers"
+#define DEBUGTAG "registers"
 
 #include "Registers.h"
 
@@ -94,6 +94,15 @@ template <> struct RegisterInfo<rr::X64Arch> {
   static Table registers;
 };
 
+template <> struct RegisterInfo<rr::ARMArch> {
+  static bool ignore_undefined_register(GdbRegister regno) {
+    return false;
+  }
+  static const size_t num_registers = DREG_NUM_LINUX_ARM;
+  typedef RegisterTable<num_registers> Table;
+  static Table registers;
+};
+
 #define RV_ARCH(gdb_suffix, name, arch, extra_ctor_args)                       \
   RegisterInit(DREG_##gdb_suffix,                                              \
                RegisterValue(#name, offsetof(arch::user_regs_struct, name),    \
@@ -103,11 +112,15 @@ template <> struct RegisterInfo<rr::X64Arch> {
   RV_ARCH(gdb_suffix, name, rr::X86Arch, /* empty */)
 #define RV_X64(gdb_suffix, name)                                               \
   RV_ARCH(gdb_suffix, name, rr::X64Arch, /* empty */)
+#define RV_ARM(gdb_suffix, name)                                               \
+  RV_ARCH(gdb_suffix, name, rr::ARMArch, /* empty */)
 #define COMMA ,
 #define RV_X86_WITH_MASK(gdb_suffix, name, comparison_mask)                    \
   RV_ARCH(gdb_suffix, name, rr::X86Arch, COMMA comparison_mask)
 #define RV_X64_WITH_MASK(gdb_suffix, name, comparison_mask)                    \
   RV_ARCH(gdb_suffix, name, rr::X64Arch, COMMA comparison_mask)
+#define RV_ARM_WITH_MASK(gdb_suffix, name, comparison_mask)                    \
+  RV_ARCH(gdb_suffix, name, rr::ARMArch, COMMA comparison_mask)
 
 /* The following are eflags that have been observed to be non-deterministic
    in practice.  We need to mask them off when comparing registers to
@@ -177,6 +190,31 @@ RegisterInfo<rr::X64Arch>::Table RegisterInfo<
                                 // elsewhere.
                                 RV_X64_WITH_MASK(ORIG_RAX, orig_rax, 0), };
 
+RegisterInfo<rr::ARMArch>::Table RegisterInfo<rr::ARMArch>::registers = {
+  RV_ARM(ARM_R0, r[0]),
+  RV_ARM(ARM_R1, r[1]),
+  RV_ARM(ARM_R2, r[2]),
+  RV_ARM(ARM_R3, r[3]),
+  RV_ARM(ARM_R4, r[4]),
+  RV_ARM(ARM_R5, r[5]),
+  RV_ARM(ARM_R6, r[6]),
+  RV_ARM(ARM_R7, r[7]),
+  RV_ARM(ARM_R8, r[8]),
+  RV_ARM(ARM_R9, r[9]),
+  RV_ARM(ARM_R10, r[10]),
+  RV_ARM(ARM_R11, r[11]),
+  RV_ARM_WITH_MASK(ARM_R12, r[12], 0), // The kernel is wack.
+  RV_ARM(ARM_SP, r[13]),
+  RV_ARM(ARM_LR, r[14]),
+  RV_ARM(ARM_PC, r[15]),
+  RV_ARM(ARM_CPSR, r[16]),
+  //  RV_ARM(ARM_ORIG_r0, r[17]),
+};
+
+#undef RV_ARM_WITH_MASK
+#undef RV_X64_WITH_MASK
+#undef RV_X86_WITH_MASK
+#undef RV_ARM
 #undef RV_X64
 #undef RV_X86
 #undef RV_ARCH
@@ -409,9 +447,16 @@ template <>
   bool match = compare_register_files_internal(name1, reg1, name2, reg2,
                                                mismatch_behavior);
 
+  if (!(!bail_error || match)) {
+    uint8_t insns[16];
+    t->read_bytes(t->ip().to_data_ptr<void>() - 2, insns);
+
+    assert(false);
+
   ASSERT(t, !bail_error || match) << "Fatal register mismatch (ticks/rec:"
                                   << t->tick_count() << "/"
                                   << t->current_trace_frame().ticks() << ")";
+  }
 
   if (match && mismatch_behavior == LOG_MISMATCHES) {
     LOG(info) << "(register files are the same for " << name1 << " and "
@@ -424,6 +469,10 @@ template <>
 template <typename Arch>
 size_t Registers::read_register_arch(uint8_t* buf, GdbRegister regno,
                                      bool* defined) const {
+  if (regno == 25) {
+    // Yay ARM
+    regno = DREG_ARM_CPSR;
+  }
   assert(regno < total_registers());
   // Make sure these two definitions don't get out of sync.
   assert(array_length(RegisterInfo<Arch>::registers) == total_registers());
@@ -532,7 +581,7 @@ void from_x86_narrow(int32_t& r32, uint64_t& r64) {
 }
 void from_x86_same(int32_t& r32, uint32_t& r64) { r64 = r32; }
 
-void Registers::set_from_ptrace(const struct user_regs_struct& ptrace_regs) {
+void Registers::set_from_ptrace(const user_regs_struct& ptrace_regs) {
   if (arch() == NativeArch::arch()) {
     memcpy(&u, &ptrace_regs, sizeof(ptrace_regs));
     return;
@@ -541,7 +590,7 @@ void Registers::set_from_ptrace(const struct user_regs_struct& ptrace_regs) {
   assert(arch() == x86 && NativeArch::arch() == x86_64);
   convert_x86<to_x86_narrow, to_x86_same>(
       u.x86regs, *reinterpret_cast<X64Arch::user_regs_struct*>(
-                      const_cast<struct user_regs_struct*>(&ptrace_regs)));
+                      const_cast<user_regs_struct*>(&ptrace_regs)));
 }
 
 /**
@@ -550,8 +599,8 @@ void Registers::set_from_ptrace(const struct user_regs_struct& ptrace_regs) {
  * 64-bit rr. In that case the user_regs_struct is 64-bit and we copy
  * the 32-bit register values from u.x86regs into it.
  */
-struct user_regs_struct Registers::get_ptrace() const {
-  struct user_regs_struct result;
+user_regs_struct Registers::get_ptrace() const {
+  user_regs_struct result;
   if (arch() == NativeArch::arch()) {
     memcpy(&result, &u, sizeof(result));
     return result;
@@ -585,7 +634,7 @@ vector<uint8_t> Registers::get_ptrace_for_arch(SupportedArch arch) const {
   }
   return result;
 }
-
+/*
 bool Registers::clear_singlestep_flag() {
   switch (arch()) {
     case x86:
@@ -604,6 +653,11 @@ bool Registers::clear_singlestep_flag() {
       assert(0 && "Unknown arch");
       return false;
   }
+}
+*/
+
+remote_code_ptr Registers::ip() const {
+  return RR_GET_REG(eip, rip, r[15]);
 }
 
 ostream& operator<<(ostream& stream, const Registers& r) {

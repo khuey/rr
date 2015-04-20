@@ -213,6 +213,134 @@ _syscall_hook_trampoline_90_90_90:
         .cfi_endproc
         .size _syscall_hook_trampoline_90_90_90, .-_syscall_hook_trampoline_90_90_90
 
-#endif /* __x86_64__ */
+#elif defined(__arm__)
+        .global _syscall_hook_trampoline
+        .hidden _syscall_hook_trampoline
+        .type _syscall_hook_trampoline, %function
+_syscall_hook_trampoline:
+        /* Build a |struct syscall_info| by pushing all the syscall
+         * args and the number onto the stack. */
+                          /* struct syscall_info info; */
+	push {lr}
+	push {r0,r1,r2,r3,r4,r5}
+	push {r7}
 
-        .section .note.GNU-stack,"",@progbits
+	mov r0, sp
+	blx syscall_hook
+
+	/* r0 now has the return value, so be careful not to destroy it. */
+	mov lr, r0
+	add sp, #4 /* destroy r7 */
+	pop {r0, r1, r2, r3, r4, r5}
+	mov r0, lr
+	pop {pc}
+
+	.size _syscall_hook_trampoline, .-_syscall_hook_trampoline
+
+        .global _syscall_hook_trampoline_80_bc_10_f5_80_5f_38_bf_70_47_xx_fx_xx_xx
+        .hidden _syscall_hook_trampoline_80_bc_10_f5_80_5f_38_bf_70_47_xx_fx_xx_xx
+        .type _syscall_hook_trampoline_80_bc_10_f5_80_5f_38_bf_70_47_xx_fx_xx_xx, %function
+_syscall_hook_trampoline_80_bc_10_f5_80_5f_38_bf_70_47_xx_fx_xx_xx:
+	pop {r7}
+	push {lr}
+	bl _syscall_hook_trampoline
+	/* The original instructions after the syscall were:
+	     pop {r7}
+	     cmn.w r0, #4096
+	     it cc
+	     bxcc lr
+	     b.w <offset>
+	   We injected
+	     push {r7, lr} ; overwriting svc #0
+	     ldr r7, [pc, #2]
+	     blx r7
+	     pop {r7}
+	     b.w <offset> 	; relocated from above
+	     _syscall_hook_trampoline_80_bc_10_f5_80_5f_38_bf_70_47_xx_fx_xx_xx address
+
+	   We only need to return to the callee if the comparison fails.  If it succeeds
+	   we can jump directly to the callee's callee.
+	 */
+
+	cmn r0, #4096
+	/* the easy case, we don't need our return address anymore */
+	popcc {lr} /* our return address */
+	popcc {lr} /* callee's return address */
+	popcc {r7} /* the callee pushed this */
+	bxcc lr
+
+	/* the hard case */
+	pop {r7, lr} /* put our return address in r7, the callee's return address in lr */
+	bx r7
+
+	.size _syscall_hook_trampoline_80_bc_10_f5_80_5f_38_bf_70_47_xx_fx_xx_xx, .-_syscall_hook_trampoline_80_bc_10_f5_80_5f_38_bf_70_47_xx_fx_xx_xx
+
+        .global _syscall_hook_trampoline_80_bd_af_f3_00_80_af_f3_00_80
+        .hidden _syscall_hook_trampoline_80_bd_af_f3_00_80_af_f3_00_80
+        .type _syscall_hook_trampoline_80_bd_af_f3_00_80_af_f3_00_80, %function
+_syscall_hook_trampoline_80_bd_af_f3_00_80_af_f3_00_80:
+	pop {r7}
+	push {lr}
+	bl _syscall_hook_trampoline
+	/* The original instructions after the syscall were:
+	     pop {r7, pc}
+	     nop
+	     nop
+	   We injected
+	     push {r7} ; overwriting svc #0
+	     ldr r7, [pc, #1]
+	     bx r7
+	     nop
+	     _syscall_hook_trampoline_80_bd_af_f3_00_80_af_f3_00_80 address
+	 */
+
+	pop {lr}
+	pop {r7, pc}
+
+	.size _syscall_hook_trampoline_80_bd_af_f3_00_80_af_f3_00_80, .-_syscall_hook_trampoline_80_bd_af_f3_00_80_af_f3_00_80
+
+	.global _syscall_hook_trampoline_07_46_60_46_xx_fx_xx_cx_38_46_5d_f8_04_eb
+	.hidden _syscall_hook_trampoline_07_46_60_46_xx_fx_xx_cx_38_46_5d_f8_04_eb
+	.type _syscall_hook_trampoline_07_46_60_46_xx_fx_xx_cx_38_46_5d_f8_04_eb, %function
+_syscall_hook_trampoline_07_46_60_46_xx_fx_xx_cx_38_46_5d_f8_04_eb:
+	pop {r7}
+	push {lr}
+	bl _syscall_hook_trampoline
+	/* The original instructions after the syscall were:
+	     mov r7, r0
+	     mov r0, ip
+	     bl <offset>
+	     mov r0, r7
+	     ldr.w lr, [sp], #4
+	   We injected
+	     push {r7}
+	     ldr r7, [pc, #0]
+	     blx r7
+	     _syscall_hook_trampoline_07_46_60_46_xx_fx_xx_cx_38_46_5d_f8_04_eb address
+	     absolute address of the original bl
+	   with a nop at either the beginning or the end to maintain alignment.
+	*/
+
+	ldr lr, [sp, #0]
+	bic r7, lr, #1 /* clear the thumb bit from lr */
+	add r7, r7, #4
+	ldr lr, [r7]
+	mov r7, r0
+	mov r0, ip
+
+	blx lr
+
+	mov r0, r7
+	pop {r7}  /* our lr */
+	ldr lr, [sp], #4
+	/* This either goes immediately to the next instruction, or to our
+	   trailing nop we added for alignment */
+	add r7, #8
+
+	bx r7
+
+	.size _syscall_hook_trampoline_07_46_60_46_xx_fx_xx_cx_38_46_5d_f8_04_eb, .-_syscall_hook_trampoline_07_46_60_46_xx_fx_xx_cx_38_46_5d_f8_04_eb
+
+#endif
+
+        .section .note.GNU-stack,"",%progbits

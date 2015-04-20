@@ -6,8 +6,8 @@ long int counter = 0;
 pthread_barrier_t bar;
 
 void catcher(int sig) {
-  atomic_printf("Signal caught, Counter is %ld\n", counter);
-  atomic_puts("EXIT-SUCCESS");
+  printf("Signal caught, Counter is %ld\n", counter);
+  printf("EXIT-SUCCESS");
   _exit(0);
 }
 

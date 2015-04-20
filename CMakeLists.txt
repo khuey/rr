@@ -36,17 +36,33 @@ if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")
   endif()
 endif()
 
-option(force32bit, "Force a 32-bit build, rather than a 64-bit one")
-if(force32bit)
-  set(rr_64BIT false)
-  set(rr_MBITNESS_OPTION -m32)
-else()
-  if (CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(rr_64BIT true)
-  else()
+if(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64")
+  set(TARGET_ARCHITECTURE "amd64")
+  set(INTEL_ARCHITECTURE 1)
+elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "i.86")
+  set(TARGET_ARCHITECTURE "i386")
+  set(INTEL_ARCHITECTURE 1)
+elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm.*")
+  set(TARGET_ARCHITECTURE "arm")
+endif()
+
+if(INTEL_ARCHITECTURE)
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DINTEL_ARCHITECTURE")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DINTEL_ARCHITECTURE")
+  set(CMAKE_ASM_FLAGS "${CMAKE_ASM_FLAGS} -DINTEL_ARCHITECTURE")
+
+  option(force32bit, "Force a 32-bit build, rather than a 64-bit one")
+  if(force32bit)
     set(rr_64BIT false)
+    set(rr_MBITNESS_OPTION -m32)
+  else()
+    if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+      set(rr_64BIT true)
+    else()
+      set(rr_64BIT false)
+    endif()
+    set(rr_MBITNESS_OPTION)
   endif()
-  set(rr_MBITNESS_OPTION)
 endif()
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${rr_MBITNESS_OPTION}")
@@ -125,8 +141,10 @@ set(GENERATED_FILES
   CheckSyscallNumbers.generated
   IsAlwaysEmulatedSyscall.generated
   SyscallDefsTable.generated
+  SyscallEnumsARM.generated
   SyscallEnumsX64.generated
   SyscallEnumsX86.generated
+  SyscallEnumsForTestsARM.generated
   SyscallEnumsForTestsX64.generated
   SyscallEnumsForTestsX86.generated
   SyscallHelperFunctions.generated
@@ -147,20 +165,25 @@ endforeach(generated_file)
 
 add_custom_target(Generated DEPENDS ${GENERATED_FILES})
 
+if(INTEL_ARCHITECTURE)
+  set(CPUID_FILES
+    src/test/cpuid_loop.S
+  )
+endif()
+
 add_executable(rr
-  src/test/cpuid_loop.S
+  ${CPUID_FILES}
   src/AddressSpace.cc
   src/AutoRemoteSyscalls.cc
   src/Command.cc
   src/CompressedReader.cc
   src/CompressedWriter.cc
-  src/CPUIDBugDetector.cc
   src/DiversionSession.cc
   src/DumpCommand.cc
   src/EmuFs.cc
   src/Event.cc
   src/ExtraRegisters.cc
-  src/fast_forward.cc
+#  src/fast_forward.cc
   src/FdTable.cc
   src/Flags.cc
   src/GdbConnection.cc
@@ -277,11 +300,11 @@ set(BASIC_TESTS
   async_segv_ignored
   async_signal_syscalls2
   at_threadexit
-  bad_ip
+#  bad_ip
   bad_syscall
   barrier
   big_buffers
-  block
+#  block
   blocked_sigsegv
   brk
   chew_cpu
@@ -296,13 +319,13 @@ set(BASIC_TESTS
   epoll_create
   epoll_create1
   exec_self
-  fadvise
+#  fadvise
   fault_in_code_page
   fcntl_owner_ex
   flock
   fork_child_crash
   fork_stress
-  fxregs
+#  fxregs
   getgroups
   getrandom
   setitimer
@@ -313,7 +336,7 @@ set(BASIC_TESTS
   grandchild_threads_thread_running
   grandchild_threads_parent_alive
   ignored_sigsegv
-  int3
+#  int3
   intr_futex_wait_restart
   intr_poll
   intr_pselect
@@ -323,14 +346,14 @@ set(BASIC_TESTS
   intr_sleep_no_restart
   invalid_fcntl
   io
-  legacy_ugid
+#  legacy_ugid
   madvise
   map_fixed
   mincore
   mmap_discontinuous
   mmap_private
   mmap_ro
-  mmap_shared
+#  mmap_shared
   mmap_shared_subpage
   mmap_short_file
   mmap_tmpfs
@@ -357,15 +380,15 @@ set(BASIC_TESTS
   protect_rr_fds
   prw
   pthread_condvar_locking
-  ptrace
-  ptrace_attach_null_status
-  ptrace_attach_running
-  ptrace_attach_sleeping
-  ptrace_attach_stopped
-  ptrace_attach_thread_running
-  ptracer_death
-  ptracer_death_multithread
-  ptracer_death_multithread_peer
+#  ptrace
+#  ptrace_attach_null_status
+#  ptrace_attach_running
+#  ptrace_attach_sleeping
+#  ptrace_attach_stopped
+#  ptrace_attach_thread_running
+#  ptracer_death
+#  ptracer_death_multithread
+#  ptracer_death_multithread_peer
   quotactl
   rdtsc
   readdir
@@ -390,11 +413,11 @@ set(BASIC_TESTS
   sigaltstack
   sigchld_interrupt_signal
   sighandler_fork
-  sigill
+#  sigill
   signalfd
   sigprocmask
   sigqueueinfo
-  sigreturn
+#  sigreturn
   sigreturn_reg
   sigrt
   sigstop
@@ -416,7 +439,7 @@ set(BASIC_TESTS
   syscallbuf_timeslice2
   sysconf
   sysctl
-  sysemu_singlestep
+#  sysemu_singlestep
   sysinfo
   tcgets
   tgkill
@@ -458,7 +481,7 @@ set(TESTS_WITH_PROGRAM
   async_signal_syscalls_siginfo
   async_usr1
   block_intr_sigchld
-  blocked_bad_ip
+#  blocked_bad_ip
   breakpoint
   breakpoint_overlap
   call_function
@@ -492,8 +515,8 @@ set(TESTS_WITH_PROGRAM
   segfault
   stack_growth
   step_thread
-  string_instructions
-  string_instructions_replay
+#  string_instructions
+#  string_instructions_replay
   syscallbuf_fd_disabling
   target_fork
   target_process
@@ -539,7 +562,7 @@ set(TESTS_WITHOUT_PROGRAM
   checkpoint_prctl_name
   checkpoint_simple
   cont_signal
-  cpuid
+#  cpuid
   dead_thread_target
   deliver_async_signal_during_syscalls
   env_newline
@@ -592,9 +615,9 @@ add_dependencies(test_lib Generated)
 target_link_libraries(constructor -lrt test_lib)
 
 # cpuid test needs to link with cpuid_loop.S
-add_executable(cpuid src/test/cpuid.c src/test/cpuid_loop.S)
-add_dependencies(cpuid Generated)
-target_link_libraries(cpuid -lrt)
+#add_executable(cpuid src/test/cpuid.c src/test/cpuid_loop.S)
+#add_dependencies(cpuid Generated)
+#target_link_libraries(cpuid -lrt)
 
 foreach(test ${BASIC_TESTS} ${OTHER_TESTS})
   add_test(${test}
@@ -736,13 +759,7 @@ set(CPACK_PACKAGE_VENDOR "Mozilla Foundation")
 
 set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Mozilla Foundation")
 set(CPACK_DEBIAN_PACKAGE_SECTION "devel")
-if(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "x86_64")
-  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
-elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "i.86")
-  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "i386")
-elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "arm.*")
-  set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "arm")
-endif()
+set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${TARGET_ARCHITECTURE}")
 
 # XXX Cmake 2.8.7 doesn't know how to avoid specifiying /usr,
 # /usr/bin, etc, as files to be installed, but distros are finicky

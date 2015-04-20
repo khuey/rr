@@ -1,6 +1,7 @@
 /* -*- Mode: C++; tab-width: 8; c-basic-offset: 2; indent-tabs-mode: nil; -*- */
 
 //#define DEBUGTAG "Task"
+#include <sys/ptrace.h>
 
 #include "task.h"
 
@@ -239,11 +240,13 @@ Task::Task(Session& session, pid_t _tid, pid_t _rec_tid, uint32_t serial,
       seccomp_bpf_enabled(false),
       child_sig(),
       stepped_into_syscall(false),
+                                               wanted_sysemu(false),
       hpc(_tid),
       tid(_tid),
       rec_tid(_rec_tid > 0 ? _rec_tid : _tid),
       syscallbuf_hdr(),
       num_syscallbuf_bytes(),
+      emulating_single_stepping(false),
       serial(serial),
       blocked_sigs(),
       prname("???"),
@@ -255,7 +258,9 @@ Task::Task(Session& session, pid_t _tid, pid_t _rec_tid, uint32_t serial,
       robust_futex_list(),
       robust_futex_list_len(),
       session_(&session),
+#if !defined(__arm__)
       thread_area(),
+#endif
       thread_area_valid(),
       tid_futex(),
       top_of_stack(),
@@ -358,8 +363,8 @@ void Task::finish_emulated_syscall() {
   // XXX verify that this can't be interrupted by a breakpoint trap
   Registers r = regs();
   remote_code_ptr ip = r.ip();
-  bool known_idempotent_insn_after_syscall =
-      (is_in_traced_syscall() || is_in_untraced_syscall());
+  //  bool known_idempotent_insn_after_syscall =
+  //      (is_in_traced_syscall() || is_in_untraced_syscall());
 
   // We're about to single-step the tracee at its $ip just past
   // the syscall insn, then back up the $ip to where it started.
@@ -376,20 +381,24 @@ void Task::finish_emulated_syscall() {
   // Syscalls made from the syscallbuf are known to execute an
   // idempotent insn after the syscall trap (restore register
   // from stack), so we don't have to pay this expense.
-  if (!known_idempotent_insn_after_syscall) {
-    bool ok = vm()->add_breakpoint(ip, TRAP_BKPT_INTERNAL);
+  //  if (!known_idempotent_insn_after_syscall) {
+    bool ok = false;
+    ok = vm()->add_breakpoint(ip, TRAP_BKPT_INTERNAL);
     ASSERT(this, ok) << "Can't add breakpoint???";
-  }
-  cont_sysemu_singlestep();
 
-  if (!known_idempotent_insn_after_syscall) {
+    // }
+    //cont_sysemu_singlestep();
+    resume_execution(RESUME_SYSEMU, RESUME_WAIT);
+
+  //  if (!known_idempotent_insn_after_syscall) {
     // The breakpoint should raise SIGTRAP, but we can also see
     // any of the host of replay-ignored signals.
+
     ASSERT(this, (pending_sig() == SIGTRAP ||
                   ReplaySession::is_ignored_signal(pending_sig())))
         << "PENDING SIG IS " << signal_name(pending_sig());
     vm()->remove_breakpoint(ip, TRAP_BKPT_INTERNAL);
-  }
+    //  }
   set_regs(r);
   wait_status = 0;
 }
@@ -672,7 +681,7 @@ void Task::init_buffers_arch(remote_ptr<void> map_hint,
 
   // Arguments to the rrcall.
   remote_ptr<rrcall_init_buffers_params<Arch> > child_args =
-      remote.regs().arg1();
+      remote.regs().original_arg1();
   auto args = read_mem(child_args);
 
   if (as->syscallbuf_enabled()) {
@@ -722,7 +731,7 @@ bool Task::is_arm_desched_event_syscall() {
 
 bool Task::is_desched_event_syscall() {
   return is_ioctl_syscall(regs().original_syscallno(), arch()) &&
-         (desched_fd_child == (int)regs().arg1_signed() ||
+         (desched_fd_child == (int)regs().original_arg1_signed() ||
           desched_fd_child == REPLAY_DESCHED_EVENT_FD);
 }
 
@@ -746,7 +755,7 @@ bool Task::is_probably_replaying_syscall() {
 
 bool Task::is_ptrace_seccomp_event() const {
   int event = ptrace_event();
-  return (PTRACE_EVENT_SECCOMP_OBSOLETE == event ||
+  return (/*PTRACE_EVENT_SECCOMP_OBSOLETE == event ||*/
           PTRACE_EVENT_SECCOMP == event);
 }
 
@@ -852,7 +861,7 @@ void Task::on_syscall_exit_arch(int syscallno, const Registers& regs) {
 
   switch (syscallno) {
     case Arch::brk: {
-      remote_ptr<void> addr = regs.arg1();
+      remote_ptr<void> addr = regs.original_arg1();
       if (!addr) {
         // A brk() update of nullptr is observed with
         // libc, which apparently is its means of
@@ -870,31 +879,31 @@ void Task::on_syscall_exit_arch(int syscallno, const Registers& regs) {
       return;
     }
     case Arch::mprotect: {
-      remote_ptr<void> addr = regs.arg1();
+      remote_ptr<void> addr = regs.original_arg1();
       size_t num_bytes = regs.arg2();
       int prot = regs.arg3_signed();
       return vm()->protect(addr, num_bytes, prot);
     }
     case Arch::mremap: {
-      remote_ptr<void> old_addr = regs.arg1();
+      remote_ptr<void> old_addr = regs.original_arg1();
       size_t old_num_bytes = regs.arg2();
       remote_ptr<void> new_addr = regs.syscall_result();
       size_t new_num_bytes = regs.arg3();
       return vm()->remap(old_addr, old_num_bytes, new_addr, new_num_bytes);
     }
     case Arch::munmap: {
-      remote_ptr<void> addr = regs.arg1();
+      remote_ptr<void> addr = regs.original_arg1();
       size_t num_bytes = regs.arg2();
       return vm()->unmap(addr, num_bytes);
     }
     case Arch::shmdt: {
-      remote_ptr<void> addr = regs.arg1();
+      remote_ptr<void> addr = regs.original_arg1();
       auto mapping = vm()->mapping_of(addr);
       ASSERT(this, mapping.first.start == addr);
       return vm()->unmap(addr, mapping.first.end - addr);
     }
     case Arch::ipc: {
-      switch ((int)regs.arg1_signed()) {
+      switch ((int)regs.original_arg1_signed()) {
         case SHMDT: {
           remote_ptr<void> addr = regs.arg5();
           auto mapping = vm()->mapping_of(addr);
@@ -910,9 +919,9 @@ void Task::on_syscall_exit_arch(int syscallno, const Registers& regs) {
     case Arch::set_robust_list:
       set_robust_list(regs.arg1(), (size_t)regs.arg2());
       return;
-    case Arch::set_thread_area:
+      /*    case Arch::set_thread_area:
       set_thread_area(regs.arg1());
-      return;
+      return;*/
     case Arch::set_tid_address:
       set_tid_addr(regs.arg1());
       return;
@@ -929,10 +938,10 @@ void Task::on_syscall_exit_arch(int syscallno, const Registers& regs) {
     case Arch::dup:
     case Arch::dup2:
     case Arch::dup3:
-      fd_table()->did_dup(regs.arg1(), regs.syscall_result());
+      fd_table()->did_dup(regs.original_arg1(), regs.syscall_result());
       return;
     case Arch::close:
-      fd_table()->did_close(regs.arg1());
+      fd_table()->did_close(regs.original_arg1());
       return;
 
     case Arch::unshare:
@@ -943,7 +952,7 @@ void Task::on_syscall_exit_arch(int syscallno, const Registers& regs) {
       return;
 
     case Arch::write: {
-      int fd = (int)regs.arg1_signed();
+      int fd = (int)regs.original_arg1_signed();
       vector<FileMonitor::Range> ranges;
       ssize_t amount = regs.syscall_result_signed();
       if (amount > 0) {
@@ -954,7 +963,7 @@ void Task::on_syscall_exit_arch(int syscallno, const Registers& regs) {
     }
 
     case Arch::writev: {
-      int fd = (int)regs.arg1_signed();
+      int fd = (int)regs.original_arg1_signed();
       vector<FileMonitor::Range> ranges;
       auto iovecs =
           read_mem(remote_ptr<typename Arch::iovec>(regs.arg2()), regs.arg3());
@@ -978,6 +987,7 @@ void Task::on_syscall_exit(int syscallno, const Registers& regs) {
 }
 
 void Task::move_ip_before_breakpoint() {
+  return;
   // TODO: assert that this is at a breakpoint trap.
   Registers r = regs();
   r.set_ip(r.ip().decrement_by_bkpt_insn_length(arch()));
@@ -994,6 +1004,7 @@ static SupportedArch determine_arch(Task* t, const string& file_name) {
   ASSERT(t, file_name.size() > 0);
   switch (read_elf_class(file_name)) {
     case ELFCLASS32:
+      return ARM;
       return x86;
     case ELFCLASS64:
       ASSERT(t, NativeArch::arch() == x86_64) << "64-bit tracees not supported";
@@ -1033,12 +1044,12 @@ void Task::post_exec(const Registers* replay_regs,
   if (replay_regs) {
     registers = *replay_regs;
     extra_registers = *replay_extra_regs;
-    ASSERT(this, !extra_registers.empty());
+    //    ASSERT(this, !extra_registers.empty());
   } else {
     registers.set_arch(determine_arch(this, exe_file));
     extra_registers.set_arch(registers.arch());
     // Read registers now that the architecture is known.
-    struct user_regs_struct ptrace_regs;
+    user_regs_struct ptrace_regs;
     ptrace_if_alive(PTRACE_GETREGS, nullptr, &ptrace_regs);
     registers.set_from_ptrace(ptrace_regs);
     // Change syscall number to execve *for the new arch*. If we don't do this,
@@ -1220,6 +1231,7 @@ static void init_xsave() {
   }
   xsave_initialized = true;
 
+#if !defined(__arm__)
   unsigned int eax, ecx, edx;
   cpuid(CPUID_GETFEATURES, 0, &eax, &ecx, &edx);
   if (!(ecx & (1 << 26))) {
@@ -1231,6 +1243,7 @@ static void init_xsave() {
   // even when it might not be needed. Simpler that way.
   cpuid(CPUID_GETXSAVE, 0, &eax, &ecx, &edx);
   xsave_area_size = ecx;
+#endif
 }
 
 const ExtraRegisters& Task::extra_regs() {
@@ -1262,6 +1275,8 @@ const ExtraRegisters& Task::extra_regs() {
       extra_registers.format_ = ExtraRegisters::XSAVE;
       extra_registers.data.resize(sizeof(user_fpregs_struct));
       xptrace(PTRACE_GETFPREGS, nullptr, extra_registers.data.data());
+#elif defined(__arm__)
+      // Nothing to do
 #else
 #error need to define new extra_regs support
 #endif
@@ -1306,6 +1321,7 @@ static ReturnAddressList return_addresses_x86ish(Task* t) {
   // or PLT stubs (which start with 'jmp'). Since it doesn't matter if we
   // capture addresses that aren't real return addresses, just capture those
   // words unconditionally.
+  /*
   typename Arch::size_t frame[2];
   int next_address = 0;
   if (t->read_bytes_fallible(t->regs().sp(), sizeof(frame), frame) ==
@@ -1322,7 +1338,7 @@ static ReturnAddressList return_addresses_x86ish(Task* t) {
     }
     result.addresses[i] = frame[1];
     bp = frame[0];
-  }
+    }*/
   return result;
 }
 
@@ -1370,6 +1386,10 @@ void Task::remote_memcpy(remote_ptr<void> dst, remote_ptr<void> src,
   write_bytes_helper(dst, num_bytes, buf);
 }
 
+inline bool is_single_stepping(ResumeRequest how) {
+  return how == RESUME_SINGLESTEP || how == RESUME_SYSEMU_SINGLESTEP;
+}
+
 void Task::resume_execution(ResumeRequest how, WaitRequest wait_how, int sig,
                             Ticks tick_period) {
   // Treat a 0 tick_period as a very large but finite number.
@@ -1379,9 +1399,20 @@ void Task::resume_execution(ResumeRequest how, WaitRequest wait_how, int sig,
   // replay.
   // Accumulate any unknown stuff in tick_count().
   hpc.reset(tick_period == 0 ? 0xffffffff : tick_period);
-  LOG(debug) << "resuming execution with " << ptrace_req_name(how);
+  LOG(debug) << "resuming execution with " << ptrace_req_name(how) << " ip " << this->ip();
   breakpoint_set_where_execution_resumed =
       vm()->get_breakpoint_type_at_addr(ip()) != TRAP_NONE;
+
+#if defined(__arm__)
+  if (is_single_stepping(how)) {
+    LOG(debug) << "emulate single stepping";
+    // ARM doesn't support single stepping.  We have to emulate it.
+    how = (ResumeRequest)ARMArch::emulate_single_stepping(how, this);
+    assert(!emulating_single_stepping);
+    emulating_single_stepping = true;
+  }
+#endif
+
   ptrace_if_alive(how, nullptr, (void*)(uintptr_t)sig);
   is_stopped = false;
   extra_registers_known = false;
@@ -1403,9 +1434,11 @@ ssize_t Task::set_data_from_trace() {
 }
 
 void Task::apply_all_data_records_from_trace() {
+  LOG(debug) << "apply_all_data_records_from_trace";
   TraceReader::RawData buf;
   while (trace_reader().read_raw_data_for_frame(current_trace_frame(), buf)) {
     if (!buf.addr.is_null() && buf.data.size() > 0) {
+      LOG(debug) << "applying record";
       write_bytes_helper(buf.addr, buf.data.size(), buf.data.data());
     }
   }
@@ -1417,18 +1450,21 @@ void Task::set_return_value_from_trace() {
   // In some cases (e.g. syscalls forced to return an error by tracee
   // seccomp filters) we need to emulate a change to the original_syscallno
   // (to -1 in that case).
-  r.set_original_syscallno(current_trace_frame().regs().original_syscallno());
+  assert(r.original_syscallno() == current_trace_frame().regs().original_syscallno());
   set_regs(r);
 }
 
 void Task::set_regs(const Registers& regs) {
+  LOG(debug) << "set_regs";
   ASSERT(this, is_stopped);
   registers = regs;
   auto ptrace_regs = registers.get_ptrace();
+  ptrace_regs.uregs[15] &= ~0x1; // Mask off the thumb bit before we put it back.
   ptrace_if_alive(PTRACE_SETREGS, nullptr, &ptrace_regs);
 }
 
 void Task::set_extra_regs(const ExtraRegisters& regs) {
+  return;
   ASSERT(this, !regs.empty()) << "Trying to set empty ExtraRegisters";
   extra_registers = regs;
   extra_registers_known = true;
@@ -1447,6 +1483,8 @@ void Task::set_extra_regs(const ExtraRegisters& regs) {
                         extra_registers.data.data());
 #elif defined(__x86_64__)
         ptrace_if_alive(PTRACE_SETFPREGS, nullptr, extra_registers.data.data());
+#elif defined (__arm__)
+        // Nothing to do.
 #else
 #error Unsupported architecture
 #endif
@@ -1554,6 +1592,7 @@ uintptr_t Task::get_debug_reg(size_t regno) {
   return result;
 }
 
+/*
 void Task::set_thread_area(remote_ptr<void> tls) {
   thread_area = read_mem(tls.cast<struct user_desc>());
   thread_area_valid = true;
@@ -1562,7 +1601,7 @@ void Task::set_thread_area(remote_ptr<void> tls) {
 const struct user_desc* Task::tls() const {
   return thread_area_valid ? &thread_area : nullptr;
 }
-
+*/
 void Task::set_tid_addr(remote_ptr<int> tid_addr) {
   LOG(debug) << "updating cleartid futex to " << tid_addr;
   tid_futex = tid_addr;
@@ -1600,11 +1639,22 @@ void Task::signal_delivered(int sig) {
 }
 
 bool Task::signal_has_user_handler(int sig) const {
-  return sighandlers->get(sig).is_user_handler();
+  bool ret = sighandlers->get(sig).is_user_handler();
+  LOG(debug) << "has_user_handler " << ret;
+  return ret;
 }
 
 remote_code_ptr Task::get_signal_user_handler(int sig) const {
   return sighandlers->get(sig).get_user_handler();
+}
+
+void Task::enter_signal_handler(int sig) {
+  assert(signal_has_user_handler(sig));
+  remote_code_ptr signal_handler = get_signal_user_handler(sig);
+
+  vm()->add_breakpoint(signal_handler, TRAP_STEPI_INTERNAL_EMULATION);
+  resume_execution(RESUME_CONT, RESUME_WAIT, sig);
+  vm()->remove_breakpoint(signal_handler, TRAP_STEPI_INTERNAL_EMULATION);
 }
 
 const vector<uint8_t>& Task::signal_action(int sig) const {
@@ -1666,7 +1716,7 @@ void Task::update_prname(remote_ptr<void> child_addr) {
 
 template <typename Arch>
 void Task::update_sigaction_arch(const Registers& regs) {
-  int sig = regs.arg1_signed();
+  int sig = regs.original_arg1_signed();
   remote_ptr<typename Arch::kernel_sigaction> new_sigaction = regs.arg2();
   if (0 == regs.syscall_result() && !new_sigaction.is_null()) {
     // A new sighandler was installed.  Update our
@@ -1680,6 +1730,7 @@ void Task::update_sigaction_arch(const Registers& regs) {
         new_sigaction,
         sizeof(sa) - (sizeof(typename Arch::sigset_t) - sigset_size), &sa);
     sighandlers->get(sig).init_arch<Arch>(sa);
+    LOG(debug) << "Installed handler for signal " << sig;
   }
 }
 
@@ -1688,7 +1739,7 @@ void Task::update_sigaction(const Registers& regs) {
 }
 
 void Task::update_sigmask(const Registers& regs) {
-  int how = regs.arg1_signed();
+  int how = regs.original_arg1_signed();
   remote_ptr<sig_set_t> setp = regs.arg2();
 
   if (regs.syscall_failed() || !setp) {
@@ -1885,6 +1936,7 @@ static bool is_in_non_sigreturn_exit_syscall(Task* t) {
 }
 
 static void fixup_syscall_registers(Registers& registers) {
+#if 0
   if (registers.arch() == x86_64) {
     // x86-64 'syscall' instruction copies RFLAGS to R11 on syscall entry.
     // If we single-stepped into the syscall instruction, the TF flag will be
@@ -1917,6 +1969,7 @@ static void fixup_syscall_registers(Registers& registers) {
     // now.
     registers.set_eflags(0x246);
   }
+#endif
 }
 
 void Task::fixup_syscall_regs() {
@@ -1926,17 +1979,15 @@ void Task::fixup_syscall_regs() {
 
 void Task::did_waitpid(int status, siginfo_t* override_siginfo) {
   LOG(debug) << "  (refreshing register cache)";
-  intptr_t original_syscallno = registers.original_syscallno();
+  //  intptr_t original_syscallno = registers.original_syscallno();
   // Skip reading registers immediately after a PTRACE_EVENT_EXEC, since
   // we may not know the correct architecture.
   if (ptrace_event() != PTRACE_EVENT_EXEC) {
-    struct user_regs_struct ptrace_regs;
-    if (ptrace_if_alive(PTRACE_GETREGS, nullptr, &ptrace_regs)) {
-      registers.set_from_ptrace(ptrace_regs);
-    } else {
+    if (!update_registers()) {
       status = ptrace_exit_wait_status;
     }
   }
+
   if (pending_sig_from_status(status)) {
     if (override_siginfo) {
       pending_siginfo = *override_siginfo;
@@ -1945,18 +1996,32 @@ void Task::did_waitpid(int status, siginfo_t* override_siginfo) {
         status = ptrace_exit_wait_status;
       }
     }
+
+    if (emulating_single_stepping) {
+      LOG(debug) << "Faking single stepping";
+      assert(pending_sig_from_status(status) == SIGTRAP);
+      pending_siginfo.si_code = TRAP_TRACE; //XXXX copyying x86.
+      vm()->clear_emulation_breakpoints();
+      emulating_single_stepping = false;
+    } 
   }
 
   is_stopped = true;
+  LOG(debug) << "Setting wait_status to " << HEX(status);
   wait_status = status;
   if (ptrace_event() == PTRACE_EVENT_EXIT) {
     seen_ptrace_exit_event = true;
   }
+  if (breakpoint_set_where_execution_resumed && pending_sig() == SIGTRAP &&
+      !ptrace_event()) {
+    hpc.note_extraneous_ticks(PerfCounters::BREAKPOINT);
+  }
+
   Ticks more_ticks = hpc.read_ticks();
   ticks += more_ticks;
   session().accumulate_ticks_processed(more_ticks);
 
-  bool need_to_set_regs = registers.clear_singlestep_flag();
+  bool need_to_set_regs = false; //registers.clear_singlestep_flag();
   if (breakpoint_set_where_execution_resumed && pending_sig() == SIGTRAP &&
       !ptrace_event()) {
     ASSERT(this, more_ticks == 0);
@@ -1964,7 +2029,7 @@ void Task::did_waitpid(int status, siginfo_t* override_siginfo) {
     // syscall number can be reset to -1. Undo that, so that the register
     // state matches the state we'd be in if we hadn't resumed. ReplayTimeline
     // depends on resume-at-a-breakpoint being a noop.
-    registers.set_original_syscallno(original_syscallno);
+    //    registers.set_original_syscallno(original_syscallno);
     need_to_set_regs = true;
   }
 
@@ -2044,9 +2109,11 @@ static void set_up_process(Session& session) {
   /* Trap to the rr process if a 'rdtsc' instruction is issued.
    * That allows rr to record the tsc and replay it
    * deterministically. */
+#if defined(INTEL_ARCHITECTURE)
   if (0 > prctl(PR_SET_TSC, PR_TSC_SIGSEGV, 0, 0, 0)) {
     FATAL() << "error setting up prctl";
   }
+#endif
 
   if (0 > prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
     FATAL()
@@ -2191,7 +2258,9 @@ Task* Task::clone(int flags, remote_ptr<void> stack, remote_ptr<void> tls,
 
   t->open_mem_fd_if_needed();
   if (CLONE_SET_TLS & flags) {
+#if !defined(__arm__)
     t->set_thread_area(tls);
+#endif
   }
 
   t->as->insert_task(t);
@@ -2268,6 +2337,7 @@ Task* Task::os_clone_into(const CapturedState& state, Task* task_leader,
 template <typename Arch>
 static void copy_tls_arch(const Task::CapturedState& state,
                           AutoRemoteSyscalls& remote) {
+#if !defined(__arm__)
   if (Arch::clone_tls_type == Arch::UserDescPointer) {
     if (state.thread_area_valid) {
       AutoRestoreMem remote_tls(remote, (const uint8_t*)&state.thread_area,
@@ -2280,6 +2350,7 @@ static void copy_tls_arch(const Task::CapturedState& state,
       remote.task()->set_thread_area(remote_tls.get());
     }
   }
+#endif
 }
 
 static void copy_tls(const Task::CapturedState& state,
@@ -2296,11 +2367,11 @@ Task::CapturedState Task::capture_state() {
   state.prname = prname;
   state.robust_futex_list = robust_futex_list;
   state.robust_futex_list_len = robust_futex_list_len;
-  state.thread_area = thread_area;
-  state.thread_area_valid = thread_area_valid;
+  //  state.thread_area = thread_area;
+  //  state.thread_area_valid = thread_area_valid;
   state.num_syscallbuf_bytes = num_syscallbuf_bytes;
   state.desched_fd_child = desched_fd_child;
-  state.syscallbuf_child = syscallbuf_child;
+  //  state.syscallbuf_child = syscallbuf_child;
   if (syscallbuf_hdr) {
     state.syscallbuf_hdr.resize(syscallbuf_data_size());
     memcpy(state.syscallbuf_hdr.data(), syscallbuf_hdr,
@@ -2366,7 +2437,7 @@ void Task::copy_state(const CapturedState& state) {
       // have to unmap it, create a copy, and then
       // re-map the copy in rr and the tracee.
       init_syscall_buffer(remote, state.syscallbuf_child);
-      ASSERT(this, state.syscallbuf_child == syscallbuf_child);
+      //      ASSERT(this, state.syscallbuf_child == syscallbuf_child);
       // Ensure the copied syscallbuf has the same contents
       // as the old one, for consistency checking.
       memcpy(syscallbuf_hdr, state.syscallbuf_hdr.data(),
@@ -2403,6 +2474,8 @@ long Task::fallible_ptrace(int request, remote_ptr<void> addr, void* data) {
 }
 
 void Task::open_mem_fd() {
+  LOG(debug) << "open mem fd";
+
   // Use ptrace to read/write during open_mem_fd
   as->set_mem_fd(ScopedFd());
 
@@ -2541,6 +2614,24 @@ void Task::maybe_flush_syscallbuf() {
     }
   }
   flushed_syscallbuf = true;
+}
+
+bool Task::update_registers() {
+  user_regs_struct ptrace_regs;
+  if (!ptrace_if_alive(PTRACE_GETREGS, nullptr, &ptrace_regs)) {
+    return false;
+  }
+
+#if defined(__arm__)
+  assert(!(ptrace_regs.uregs[15] & 0x1));
+  if (ptrace_regs.uregs[16] & 0x20) {
+    // Thumb
+    ptrace_regs.uregs[15] |= 0x1;
+  }
+#endif
+
+  registers.set_from_ptrace(ptrace_regs);
+  return true;
 }
 
 ssize_t Task::read_bytes_ptrace(remote_ptr<void> addr, ssize_t buf_size,
@@ -2700,6 +2791,11 @@ bool Task::try_replace_pages(remote_ptr<void> addr, ssize_t buf_size,
 
 void Task::write_bytes_helper(remote_ptr<void> addr, ssize_t buf_size,
                               const void* buf) {
+  LOG(debug) << "Writing " << buf_size << " bytes to address " << addr;
+  /*  for (ssize_t i = 0; i < buf_size; ++i) {
+    LOG(debug) << "    " << HEX(((uint8_t*)buf)[i]);
+    }*/
+
   ASSERT(this, buf_size >= 0) << "Invalid buf_size " << buf_size;
   if (0 == buf_size) {
     return;
@@ -2781,7 +2877,7 @@ bool Task::clone_syscall_is_complete() {
 template <typename Arch>
 static remote_ptr<char> get_syscallbuf_fds_disabled_arch(Task* t) {
   auto params = t->read_mem(
-      remote_ptr<rrcall_init_preload_params<Arch> >(t->regs().arg1()));
+      remote_ptr<rrcall_init_preload_params<Arch> >(t->regs().original_arg1()));
   remote_ptr<volatile char> syscallbuf_fds_disabled =
       params.syscallbuf_fds_disabled;
   return syscallbuf_fds_disabled.cast<char>();
@@ -2901,7 +2997,9 @@ static void setup_fd_table(FdTable& fds) {
     }
     syscall(SYS_write, -1, &sum, sizeof(sum));
 
+#if !defined(__arm__)
     CPUIDBugDetector::run_detection_code();
+#endif
 
     execvpe(trace.initial_exe().c_str(),
             StringVectorToCharArray(trace.initial_argv()).get(),
@@ -2945,7 +3043,7 @@ static void setup_fd_table(FdTable& fds) {
   intptr_t options =
       PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEFORK | PTRACE_O_TRACEVFORK |
       PTRACE_O_TRACECLONE | PTRACE_O_TRACEEXEC | PTRACE_O_TRACEVFORKDONE |
-      PTRACE_O_TRACEEXIT | PTRACE_O_EXITKILL | PTRACE_O_TRACESECCOMP;
+      PTRACE_O_TRACEEXIT | /*PTRACE_O_EXITKILL |*/ PTRACE_O_TRACESECCOMP;
 
   long ret = t->fallible_ptrace(PTRACE_SEIZE, nullptr, (void*)options);
   if (ret < 0 && errno == EINVAL) {
@@ -3059,4 +3157,8 @@ pid_t Task::find_newborn_child_process() {
       return proc_tid;
     }
   }
+}
+
+InstructionSet Task::current_instruction_set() const {
+  return !!(regs().flags() & 0x20) ? THUMB_IA : ARM_IA;
 }

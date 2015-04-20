@@ -1,6 +1,6 @@
 /* -*- Mode: C++; tab-width: 8; c-basic-offset: 2; indent-tabs-mode: nil; -*- */
 
-//#define DEBUGTAG "AddressSpace"
+#define DEBUGTAG "AddressSpace"
 
 #include "AddressSpace.h"
 
@@ -25,7 +25,10 @@ using namespace std;
 
 /*static*/ ino_t MappableResource::nr_anonymous_maps;
 
-/*static*/ const uint8_t AddressSpace::breakpoint_insn;
+static const uint8_t thumb_breakpoint_insn[2] = {0x01, 0xde};
+/*static*/ const uint8_t AddressSpace::breakpoint_insn[4] = //{0xe7, 0xff, 0xde, 0xfe};
+  { 0xf0, 0x01, 0xf0, 0xe7 };
+  //  { 0x70, 0x00, 0x20, 0xe1 };
 
 dev_t FileId::dev_major() const { return is_real_device() ? MAJOR(device) : 0; }
 
@@ -241,6 +244,7 @@ struct RrVdso {
   remote_ptr<uint8_t> end;
 };
 
+#if !defined(__arm__)
 static void find_rr_vdso_map(void* it_data, Task* t,
                              const struct map_iterator_data* data) {
   if (data->info.name == "[vdso]") {
@@ -249,10 +253,17 @@ static void find_rr_vdso_map(void* it_data, Task* t,
     result->end = data->info.end_addr.cast<uint8_t>();
   }
 }
+#endif
 
 static remote_ptr<void> find_rr_vdso(Task* t, size_t* len) {
   RrVdso result;
+
+#if defined(__arm__)
+  result.start = 0xffff0000;
+  result.end = 0xffff1000;
+#else
   iterate_memory_map(t, find_rr_vdso_map, &result);
+#endif
   ASSERT(t, result.start) << "rr VDSO not found?";
   *len = result.end - result.start;
   ASSERT(t, uint32_t(*len) == *len) << "VDSO more than 4GB???";
@@ -306,7 +317,7 @@ static void write_rr_page(Task* t, ScopedFd& fd) {
       ASSERT(t, sizeof(x86_data) == write(fd, x86_data, sizeof(x86_data)));
       break;
     }
-    case x86_64:
+    case x86_64: {
       // See Task::did_waitpid for an explanation of why we have to
       // modify R11 and RCX here.
       static const uint8_t x86_64_data[] = {
@@ -328,6 +339,24 @@ static void write_rr_page(Task* t, ScopedFd& fd) {
       ASSERT(t, sizeof(x86_64_data) ==
                     write(fd, x86_64_data, sizeof(x86_64_data)));
       break;
+    }
+    case ARM: {
+      static const uint8_t ARM_data[] = {
+        // rr_page_untraced_syscall_ip:
+        0x00, 0x00, 0x00, 0xef, // syscall
+        // rr_page_ip_in_untraced_syscall:
+        0x1e, 0xff, 0x2f, 0xe1, // bx lr
+        0x00, 0xf0, 0x20, 0xe3, 0x00, 0xf0, 0x20, 0xe3,
+        0x00, 0xf0, 0x20, 0xe3, // padding
+        // rr_page_traced_syscall_ip:
+        0x00, 0x00, 0x00, 0xef, // syscall
+        // rr_page_ip_in_traced_syscall:
+        0x1e, 0xff, 0x2f, 0xe1, // bx lr
+      };
+      ASSERT(t, sizeof(ARM_data) ==
+             write(fd, ARM_data, sizeof(ARM_data)));
+      break;
+    }
   }
 }
 
@@ -375,7 +404,8 @@ void AddressSpace::map_rr_page(Task* t) {
 
 void AddressSpace::post_exec_syscall(Task* t) {
   // First locate a syscall instruction we can use for remote syscalls.
-  traced_syscall_ip_ = find_syscall_instruction(t);
+  assert(traced_syscall_ip_ == remote_code_ptr());
+  //  traced_syscall_ip_ = find_syscall_instruction(t);
   // Now remote syscalls work, we can open_mem_fd.
   t->open_mem_fd();
   // Now we can set up the "rr page" at its fixed address. This gives
@@ -411,8 +441,8 @@ void AddressSpace::dump() const {
 
 TrapType AddressSpace::get_breakpoint_type_for_retired_insn(
     remote_code_ptr ip) {
-  remote_code_ptr addr = ip.decrement_by_bkpt_insn_length(SupportedArch::x86);
-  return get_breakpoint_type_at_addr(addr);
+  //  remote_code_ptr addr = ip.decrement_by_bkpt_insn_length(SupportedArch::x86);
+  return get_breakpoint_type_at_addr(ip);
 }
 
 TrapType AddressSpace::get_breakpoint_type_at_addr(remote_code_ptr addr) {
@@ -474,7 +504,7 @@ void AddressSpace::map(remote_ptr<void> addr, size_t num_bytes, int prot,
 
 template <typename Arch> void AddressSpace::at_preload_init_arch(Task* t) {
   auto params = t->read_mem(
-      remote_ptr<rrcall_init_preload_params<Arch> >(t->regs().arg1()));
+      remote_ptr<rrcall_init_preload_params<Arch> >(t->regs().original_arg1()));
 
   ASSERT(t, !t->session().as_record() ||
                 t->session().as_record()->use_syscall_buffer() ==
@@ -596,9 +626,10 @@ void AddressSpace::remove_breakpoint(remote_code_ptr addr, TrapType type) {
 }
 
 bool AddressSpace::add_breakpoint(remote_code_ptr addr, TrapType type) {
+  LOG(debug) << "Adding breakpoint at " << addr;
   auto it = breakpoints.find(addr);
   if (it == breakpoints.end()) {
-    uint8_t overwritten_data;
+    uint8_t overwritten_data[4];
     // Grab a random task from the VM so we can use its
     // read/write_mem() helpers.
     Task* t = *task_set().begin();
@@ -607,15 +638,34 @@ bool AddressSpace::add_breakpoint(remote_code_ptr addr, TrapType type) {
                                sizeof(overwritten_data), &overwritten_data)) {
       return false;
     }
-    t->write_mem(addr.to_data_ptr<uint8_t>(), breakpoint_insn);
-
     auto it_and_is_new = breakpoints.insert(make_pair(addr, Breakpoint()));
     assert(it_and_is_new.second);
-    it_and_is_new.first->second.overwritten_data = overwritten_data;
     it = it_and_is_new.first;
+    it->second.ARM = !(addr.register_value() & 0x1);
+    auto len = it->second.data_length();
+    memcpy(it->second.overwritten_data, overwritten_data, len);
+    if (it->second.ARM) {
+      t->write_mem(addr.to_data_ptr<uint8_t>(), breakpoint_insn, len);
+    } else {
+      t->write_mem(addr.to_data_ptr<uint8_t>(), thumb_breakpoint_insn, len);
+    }
   }
   it->second.ref(type);
+
+  if (type == TRAP_STEPI_INTERNAL_EMULATION) {
+    emu_breakpoints.push_back(addr);
+  }
+
   return true;
+}
+
+void AddressSpace::clear_emulation_breakpoints() {
+  LOG(debug) << "Clearing stepi emulation breakpoints";
+  while (!emu_breakpoints.empty()) {
+    remote_code_ptr pointer = emu_breakpoints.back();
+    remove_breakpoint(pointer, TRAP_STEPI_INTERNAL_EMULATION);
+    emu_breakpoints.pop_back();
+  }
 }
 
 void AddressSpace::remove_all_breakpoints() {
@@ -1040,7 +1090,7 @@ void AddressSpace::fix_stack_segment_start(const Mapping& mapping,
 }
 
 Mapping AddressSpace::vdso() const {
-  assert(!vdso_start_addr.is_null());
+  //  assert(!vdso_start_addr.is_null());
   return mapping_of(vdso_start_addr).first;
 }
 
@@ -1066,8 +1116,9 @@ AddressSpace::AddressSpace(Task* t, const string& exe, uint32_t exec_count)
   // https://github.com/mozilla/rr/issues/1113 .
   if (session_->can_validate()) {
     iterate_memory_map(t, populate_address_space, this);
-    assert(!vdso_start_addr.is_null());
+    //    assert(!vdso_start_addr.is_null());
   } else {
+    return;
     // Find the location of the VDSO in the just-spawned process. This will
     // match the VDSO in rr itself since we haven't execed yet. So, speed
     // things up by search rr's own VDSO for a syscall instruction.
@@ -1317,7 +1368,8 @@ void AddressSpace::coalesce_around(MemoryMap::iterator it) {
 
 void AddressSpace::destroy_breakpoint(BreakpointMap::const_iterator it) {
   Task* t = *task_set().begin();
-  t->write_mem(it->first.to_data_ptr<uint8_t>(), it->second.overwritten_data);
+  t->write_mem(it->first.to_data_ptr<uint8_t>(), it->second.overwritten_data,
+               it->second.data_length());
   breakpoints.erase(it);
 }
 

@@ -1,6 +1,6 @@
 /* -*- Mode: C++; tab-width: 8; c-basic-offset: 2; indent-tabs-mode: nil; -*- */
 
-//#define DEBUGTAG "ProcessSyscallRep"
+#define DEBUGTAG "ProcessSyscallRep"
 
 #include "replay_syscall.h"
 
@@ -283,6 +283,7 @@ static void process_clone(Task* t, const TraceFrame& trace_frame,
   if (flags & CLONE_UNTRACED) {
     ASSERT(t, trace_frame.regs().original_syscallno() == Arch::clone);
     Registers r = t->regs();
+    assert(false);
     r.set_arg1(flags & ~CLONE_UNTRACED);
     t->set_regs(r);
   }
@@ -298,6 +299,7 @@ static void process_clone(Task* t, const TraceFrame& trace_frame,
       // whatever. We need to retry the system call until it succeeds. Reset
       // state to try the syscall again.
       Registers r = t->regs();
+      
       r.set_syscallno(trace_frame.regs().original_syscallno());
       r.set_ip(trace_frame.regs().ip() - syscall_instruction_length(t->arch()));
       t->set_regs(r);
@@ -321,7 +323,7 @@ static void process_clone(Task* t, const TraceFrame& trace_frame,
   r.set_original_syscallno(trace_frame.regs().original_syscallno());
   // Restore the saved flags, to hide the fact that we may have
   // masked out CLONE_UNTRACED.
-  r.set_arg1(trace_frame.regs().arg1());
+  //r.set_arg1(trace_frame.regs().arg1());
   t->set_regs(r);
 
   // Dig the recorded tid out out of the trace. The tid value returned in
@@ -404,7 +406,7 @@ static void process_execve(Task* t, const TraceFrame& trace_frame,
   TraceTaskEvent tte = read_task_trace_event(t, TraceTaskEvent::EXEC);
   t->post_exec_syscall(tte);
 
-  bool check = t->regs().arg1();
+  bool check = t->regs().original_arg1();
   /* if the execve comes from a vfork system call the ebx
    * register is not zero. in this case, no recorded data needs
    * to be injected */
@@ -819,14 +821,19 @@ static void process_init_buffers(Task* t, SyscallEntryOrExit state,
 
 template <typename Arch>
 static void rep_after_enter_syscall_arch(Task* t, int syscallno) {
+  // Smash the syscall #
+  if (t->wanted_sysemu) {
+    t->xptrace(/* PTRACE_SET_SYSCALL = */ 23, nullptr, (void*)syscall_number_for_gettid(t->arch()));
+  }
+
   switch (syscallno) {
     case Arch::exit:
-      t->destroy_buffers();
+      // t->destroy_buffers();
       break;
 
     case Arch::write:
     case Arch::writev: {
-      int fd = (int)t->regs().arg1_signed();
+      int fd = (int)t->regs().original_arg1_signed();
       t->fd_table()->will_write(t, fd);
       break;
     }
@@ -894,8 +901,14 @@ static void rep_process_syscall_arch(Task* t, ReplayTraceStep* step) {
     // simpler and probably more reliable to just check
     // the tracee $ip at syscall restart to determine
     // whether syscall re-entry needs to occur.
+    auto previous_regs = t->regs();
     t->apply_all_data_records_from_trace();
     t->set_return_value_from_trace();
+    // ARM kernel does this during a syscall interruption, we have to emulate.
+    auto now_regs = t->regs();
+    now_regs.set_arg1(previous_regs.arg1());
+    now_regs.set_ip(previous_regs.ip().decrement_by_syscall_insn_length(t->arch()));
+    t->set_regs(now_regs);
     // Use this record to recognize the syscall if it
     // indeed restarts.  If the syscall isn't restarted,
     // we'll pop this event eventually, at the point when
@@ -912,7 +925,7 @@ static void rep_process_syscall_arch(Task* t, ReplayTraceStep* step) {
     }
     step->action = TSTEP_RETIRE;
     LOG(debug) << "  " << t->syscall_name(syscall) << " interrupted by "
-               << trace_regs.syscall_result() << " at " << trace_regs.ip()
+               << trace_regs.syscall_result_signed() << " at " << trace_regs.ip()
                << ", may restart";
     return;
   }
@@ -941,6 +954,10 @@ static void rep_process_syscall_arch(Task* t, ReplayTraceStep* step) {
     } else {
       t->pop_syscall_interruption();
       LOG(debug) << "exiting restarted " << t->syscall_name(syscall);
+      // Put ip back
+      auto regs = t->regs();
+      regs.set_ip(regs.ip().increment_by_syscall_insn_length(t->arch()));
+      t->set_regs(regs);
     }
   }
 
@@ -970,11 +987,12 @@ static void rep_process_syscall_arch(Task* t, ReplayTraceStep* step) {
   switch (syscall) {
     case Arch::clone:
       return process_clone<Arch>(t, trace_frame, state, step,
-                                 trace_frame.regs().arg1());
+                                 trace_frame.regs().original_arg1());
 
     case Arch::vfork:
       if (state == SYSCALL_EXIT) {
         Registers r = t->regs();
+        t->xptrace(/* PTRACE_SET_SYSCALL = */ 23, nullptr, (void*)syscall_number_for_fork(t->arch()));
         r.set_original_syscallno(Arch::fork);
         t->set_regs(r);
       }
@@ -1026,6 +1044,7 @@ static void rep_process_syscall_arch(Task* t, ReplayTraceStep* step) {
       return process_shmdt(t, trace_frame, state, trace_regs.arg1(), step);
 
     case Arch::ipc:
+      assert(false);
       switch ((int)trace_regs.arg1_signed()) {
         case SHMAT:
           return process_shmat(t, trace_frame, state, trace_regs.arg2(),
@@ -1043,7 +1062,7 @@ static void rep_process_syscall_arch(Task* t, ReplayTraceStep* step) {
       step->action = syscall_action(state);
       step->syscall.emu = EMULATE;
       if (TSTEP_EXIT_SYSCALL == step->action) {
-        switch ((int)trace_regs.arg1_signed()) {
+        switch ((int)trace_regs.original_arg1_signed()) {
           case PR_SET_NAME: {
             remote_ptr<void> arg2 = trace_regs.arg2();
             t->update_prname(arg2);

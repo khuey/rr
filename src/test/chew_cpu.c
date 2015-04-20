@@ -12,7 +12,7 @@ static void breakpoint(void) {
 int spin(void) {
   int i, dummy = 0;
 
-  atomic_puts("spinning");
+  atomic_printf("spinning");
   /* NO SYSCALLS AFTER HERE: the point of this test is to hit
    * hpc interrupts to exercise the nonvoluntary interrupt
    * scheduler. */

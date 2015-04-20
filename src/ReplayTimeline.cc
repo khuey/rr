@@ -534,6 +534,7 @@ void ReplayTimeline::seek_to_mark(const Mark& mark) {
  */
 bool ReplayTimeline::fix_watchpoint_coalescing_quirk(ReplayResult& result,
                                                      const ProtoMark& before) {
+  return false;/*
   if (result.status == REPLAY_EXITED ||
       result.break_status.watchpoints_hit.empty()) {
     // no watchpoint hit. Nothing to fix.
@@ -582,6 +583,7 @@ bool ReplayTimeline::fix_watchpoint_coalescing_quirk(ReplayResult& result,
     }
   }
   return true;
+*/
 }
 
 bool ReplayTimeline::add_breakpoint(Task* t, remote_code_ptr addr) {

@@ -82,8 +82,11 @@ template <typename Arch> static void setup_preload_library_path(Task* t) {
 void Monkeypatcher::init_dynamic_syscall_patching(
     Task* t, int syscall_patch_hook_count,
     remote_ptr<struct syscall_patch_hook> syscall_patch_hooks) {
+  LOG(debug) << "init_dynamic_syscall_patching";
   if (syscall_patch_hook_count) {
     syscall_hooks = t->read_mem(syscall_patch_hooks, syscall_patch_hook_count);
+    // Give love (another) chance.
+    tried_to_patch_syscall_addresses.clear();
   }
 }
 
@@ -129,6 +132,150 @@ template <>
 bool patch_syscall_with_hook_arch<X64Arch>(Task* t,
                                            const syscall_patch_hook& hook) {
   return patch_syscall_with_hook_x86ish(t, hook);
+}
+
+template <>
+bool patch_syscall_with_hook_arch<ARMArch>(Task* t,
+                                           const syscall_patch_hook& hook) {
+  assert(t->current_instruction_set() == THUMB_IA);
+
+  remote_ptr<uint16_t> patch_start = ++t->regs().ip().to_data_ptr<uint16_t>();
+
+  switch (hook.next_instruction_length) {
+  case 14: {
+
+    if (!hook.flags) {
+      assert(patch_start.as_int() % 4 == 0);
+
+      uint16_t patch[] = { 0xB580, // push {r7, lr}
+                           0x4F02, // ldr r7, [pc, #2]
+                           0x47B8, // blx r7
+                           0xBC80, // pop {r7}
+                           0xF000, 0x9000, // placeholder for adjusted original branch
+                           0x0000, 0x0000, // placeholder for trampoline offset
+      };
+
+      // We have to adjust the offset of this jump, since we're moving it four bytes earlier.
+      uint32_t original_unconditional_jump = t->read_mem(patch_start.cast<uint32_t>() + 3);
+
+      int32_t original_offset = 0;
+      bool sign_bit = !!(original_unconditional_jump & 0x00000400);
+      bool j1 = !!(original_unconditional_jump & 0x20000000);
+      bool j2 = !!(original_unconditional_jump & 0x08000000);
+
+      original_offset |= (original_unconditional_jump & 0x07ff0000) >> 15;
+      original_offset |= (original_unconditional_jump & 0x000003ff) << 12;
+      original_offset |= (sign_bit == j2) ? (1 << 22) : 0;
+      original_offset |= (sign_bit == j1) ? (1 << 23) : 0;
+      original_offset |= sign_bit ? 0xfff00000 : 0;
+
+      // We moved back 4 bytes, so we have to go 4 bytes further.
+      original_offset += 4;
+
+      // Branch encoding in Thumb is wack
+      sign_bit = !!(original_offset < 0);
+      j1 = !!(original_offset & (1 << 23)) ? sign_bit : !sign_bit;
+      j2 = !!(original_offset & (1 << 22)) ? sign_bit : !sign_bit;
+
+      patch[4] |= sign_bit ? 0x0400 : 0;
+      patch[5] |= j1 ? 0x2000 : 0;
+      patch[5] |= j2 ? 0x0800 : 0;
+      patch[5] |= (original_offset & 0x00000FFE) >> 1;
+      patch[4] |= (original_offset & 0x003FF000) >> 12;
+
+      patch[6] = hook.hook_address & 0x0000FFFF;
+      patch[7] = (hook.hook_address & 0xFFFF0000) >> 16;
+
+      LOG(debug) << "Patching syscall at " << patch_start <<
+        " with jump to " << HEX(hook.hook_address);
+
+      t->write_mem(patch_start, &patch[0], sizeof(patch) / sizeof(patch[0]));
+      return true;
+    }
+
+      uint16_t patch_template[] = { 0xB480, // push {r7}
+                                    0x4F00, // ldr r7, [pc, #0]
+                                    0x47B8, // blx r7
+                                    0x0000, 0x0000, // placeholder for trampoline offset
+                                    0x0000, 0x0000, // placeholder for original jump offset
+      };
+
+      patch_template[3] = hook.hook_address & 0x0000FFFF;
+      patch_template[4] = (hook.hook_address & 0xFFFF0000) >> 16;
+
+      remote_ptr<uint32_t> original_jmp_loc = (patch_start + 3).cast<uint32_t>();
+
+      uint32_t original_unconditional_jump = t->read_mem(original_jmp_loc);
+
+      int32_t original_offset = 0;
+      bool sign_bit = !!(original_unconditional_jump & 0x00000400);
+      bool j1 = !!(original_unconditional_jump & 0x20000000);
+      bool j2 = !!(original_unconditional_jump & 0x08000000);
+
+      original_offset |= (original_unconditional_jump & 0x07ff0000) >> 15;
+      original_offset |= (original_unconditional_jump & 0x000003ff) << 12;
+      original_offset |= (sign_bit == j2) ? (1 << 22) : 0;
+      original_offset |= (sign_bit == j1) ? (1 << 23) : 0;
+      original_offset |= sign_bit ? 0xfff00000 : 0;
+
+      remote_ptr<uint16_t> jmp_target = original_jmp_loc.cast<uint16_t>() + 2 + (original_offset >> 1);
+
+      LOG(debug) << "Calculated jmp_target as " << HEX(jmp_target.as_int());
+
+      patch_template[5] = jmp_target.as_int() & 0x0000FFFF;
+      patch_template[6] = (jmp_target.as_int() & 0xFFFF0000) >> 16;
+      patch_template[5] |= 1;
+
+      LOG(debug) << "Patching syscall at " << patch_start <<
+        " with jump to " << HEX(hook.hook_address);
+
+      uint16_t patch[8];
+      if (patch_start.as_int() % 4 == 0) {
+        patch[0] = 0xBF00;
+        memcpy(&patch[1], &patch_template[0], sizeof(patch_template));
+      } else {
+        memcpy(&patch[0], &patch_template[0], sizeof(patch_template));
+        patch[7] = 0xBF00;
+      }
+
+      t->write_mem(patch_start, &patch[0], sizeof(patch) / sizeof(patch[0]));
+      return true;
+  }
+  case 10: {
+    if (patch_start.as_int() % 4 == 0) {
+      uint16_t patch[] = { 0xB480, // push {r7}
+                           0x4F01, // ldr r7, [pc, #1]
+                           0x4738, // bx r7
+                           0xBE00, // bkpt, should never get here
+                           0x0000, 0x0000, // placeholder for trampoline offset
+      };
+      patch[4] = hook.hook_address & 0x0000FFFF;
+      patch[5] = (hook.hook_address & 0xFFFF0000) >> 16;
+
+      LOG(debug) << "Patching syscall at " << patch_start <<
+        " with jump to " << HEX(hook.hook_address);
+
+      t->write_mem(patch_start, &patch[0], sizeof(patch) / sizeof(patch[0]));
+    } else {
+      uint16_t patch[] = { 0xB480, // push {r7}
+                           0x4F00, // ldr r7, [pc, #0]
+                           0x4738, // bx r7
+                           0x0000, 0x0000, // placeholder for trampoline offset
+                           0xBE00, // bkpt, should never get here
+      };
+      patch[3] = hook.hook_address & 0x0000FFFF;
+      patch[4] = (hook.hook_address & 0xFFFF0000) >> 16;
+
+      LOG(debug) << "Patching syscall at " << patch_start <<
+        " with jump to " << HEX(hook.hook_address);
+
+      t->write_mem(patch_start, &patch[0], sizeof(patch) / sizeof(patch[0]));
+    }
+    return true;
+  }
+  }
+
+  assert(false);
 }
 
 static bool patch_syscall_with_hook(Task* t, const syscall_patch_hook& hook) {
@@ -186,10 +333,21 @@ bool Monkeypatcher::try_patch_syscall(Task* t) {
                                       sizeof(dummy.next_instruction_bytes));
   intptr_t syscallno = r.original_syscallno();
   for (auto& hook : syscall_hooks) {
+    bool match = true;
+    for (int i = 0; i < hook.next_instruction_length; ++i) {
+      if ((next_instruction[i] & hook.next_instruction_mask_bytes[i]) != hook.next_instruction_bytes[i]) {
+        match = false;
+        break;
+      }
+    }/*
     if (memcmp(next_instruction.data(), hook.next_instruction_bytes,
-               hook.next_instruction_length) == 0) {
+    hook.next_instruction_length) == 0) {*/
+
+    if (!match)
+      continue;
       // Get out of executing the current syscall before we patch it.
-      r.set_original_syscallno(syscall_number_for_gettid(t->arch()));
+      t->xptrace(/* PTRACE_SET_SYSCALL = */ 23, nullptr, (void*)syscall_number_for_gettid(t->arch()));
+      //      r.set_original_syscallno(syscall_number_for_gettid(t->arch()));
       t->set_regs(r);
       // This exits the hijacked SYS_gettid.  Now the tracee is
       // ready to do our bidding.
@@ -199,7 +357,7 @@ bool Monkeypatcher::try_patch_syscall(Task* t) {
       // the tracee trapped at the syscall.
       r.set_original_syscallno(-1);
       r.set_syscallno(syscallno);
-      r.set_ip(r.ip() - syscall_instruction_length(t->arch()));
+      r.set_ip(r.ip() - 4);
       t->set_regs(r);
 
       patch_syscall_with_hook(t, hook);
@@ -208,7 +366,7 @@ bool Monkeypatcher::try_patch_syscall(Task* t) {
                  << syscall_name(syscallno, t->arch()) << " tid " << t->tid;
       // Return to caller, which resume normal execution.
       return true;
-    }
+      //    }
   }
   LOG(debug) << "Failed to patch syscall at " << r.ip() << " syscall "
              << syscall_name(syscallno, t->arch()) << " tid " << t->tid
@@ -439,6 +597,22 @@ template <>
 void patch_at_preload_init_arch<X64Arch>(Task* t, Monkeypatcher& patcher) {
   auto params = t->read_mem(
       remote_ptr<rrcall_init_preload_params<X64Arch> >(t->regs().arg1()));
+  if (!params.syscallbuf_enabled) {
+    return;
+  }
+
+  patcher.init_dynamic_syscall_patching(t, params.syscall_patch_hook_count,
+                                        params.syscall_patch_hooks);
+}
+
+template <> void patch_after_exec_arch<ARMArch>(Task* t) {
+  setup_preload_library_path<ARMArch>(t);
+}
+
+template <>
+void patch_at_preload_init_arch<ARMArch>(Task* t, Monkeypatcher& patcher) {
+  auto params = t->read_mem(
+      remote_ptr<rrcall_init_preload_params<ARMArch>>(t->regs().original_arg1()));
   if (!params.syscallbuf_enabled) {
     return;
   }

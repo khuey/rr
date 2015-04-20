@@ -7,9 +7,14 @@
 // ERANGE, which other headers below #undef :-(
 #include "remote_ptr.h"
 
+typedef int __kernel_key_t;
+
 // Get all the kernel definitions so we can verify our alternative versions.
 #include <arpa/inet.h>
-#include <asm/ldt.h>
+//#include <asm/ldt.h>
+#include <asm/posix_types.h>
+#include <asm/ipcbuf.h>
+#include <asm/msgbuf.h>
 #include <elf.h>
 #include <fcntl.h>
 #include <linux/ethtool.h>
@@ -41,6 +46,7 @@
 #include <sys/vfs.h>
 #include <sys/sysinfo.h>
 #include <termios.h>
+#include <time.h>
 
 #include <assert.h>
 
@@ -49,11 +55,26 @@
 class remote_code_ptr;
 class Task;
 
+#if defined(INTEL_ARCHITECTURE)
+#error INTEL
+#endif
+
+#if defined(__arm__)
+// Somebody thought it was a good idea to change the names ...
+typedef user_regs user_regs_struct;
+typedef user_fpregs user_fpregs_struct;
+// And not define this ...
+// typedef int __kernel_key_t;
+#endif
+
 enum SupportedArch {
   x86,
   x86_64,
-  SupportedArch_MAX = x86_64
+  ARM,
+  SupportedArch_MAX = ARM
 };
+
+class Task;
 
 namespace rr {
 
@@ -61,6 +82,8 @@ namespace rr {
 const SupportedArch RR_NATIVE_ARCH = SupportedArch::x86;
 #elif defined(__x86_64__)
 const SupportedArch RR_NATIVE_ARCH = SupportedArch::x86_64;
+#elif defined(__arm__)
+const SupportedArch RR_NATIVE_ARCH = SupportedArch::ARM;
 #else
 #error need to define new SupportedArch enum
 #endif
@@ -479,9 +502,15 @@ struct BaseArch : public wordsize, public FcntlConstants {
     // We do, however, suffix them with _only_little_endian to
     // urge anybody who does touch them to make sure the right
     // thing is done for big-endian systems.
+#if defined(__arm__)
+    __kernel_time_t msg_stime;
+    __kernel_time_t msg_rtime;
+    __kernel_time_t msg_ctime;
+#else
     uint64_t msg_stime_only_little_endian;
     uint64_t msg_rtime_only_little_endian;
     uint64_t msg_ctime_only_little_endian;
+#endif
     __kernel_ulong_t msg_cbytes;
     __kernel_ulong_t msg_qnum;
     __kernel_ulong_t msg_qbytes;
@@ -490,7 +519,7 @@ struct BaseArch : public wordsize, public FcntlConstants {
     __kernel_ulong_t unused1;
     __kernel_ulong_t unused2;
   };
-  RR_VERIFY_TYPE(msqid64_ds);
+  //  RR_VERIFY_TYPE(msqid64_ds);
 
   struct msginfo {
     signed_int msgpool;
@@ -507,9 +536,18 @@ struct BaseArch : public wordsize, public FcntlConstants {
   struct shmid64_ds {
     ipc64_perm shm_perm;
     size_t shm_segsz;
-    uint64_t shm_atime_only_little_endian;
-    uint64_t shm_dtime_only_little_endian;
-    uint64_t shm_ctime_only_little_endian;
+    __kernel_time_t shm_atime;
+#if __BITS_PER_LONG != 64
+    unsigned long unused1;
+#endif
+    __kernel_time_t shm_dtime;
+#if __BITS_PER_LONG != 64
+    unsigned long unused2;
+#endif
+    __kernel_time_t shm_ctime;
+#if __BITS_PER_LONG != 64
+    unsigned long unused3;
+#endif
     __kernel_pid_t shm_cpid;
     __kernel_pid_t shm_lpid;
     __kernel_ulong_t shm_nattch;
@@ -589,6 +627,7 @@ struct BaseArch : public wordsize, public FcntlConstants {
     PthreadStructurePointer,
   };
 
+#if !defined(__arm__)
   struct user_desc {
     unsigned_int entry_number;
     unsigned_int base_addr;
@@ -602,6 +641,7 @@ struct BaseArch : public wordsize, public FcntlConstants {
     unsigned_int lm : 1;
   };
   RR_VERIFY_TYPE(user_desc);
+#endif
 
   // This structure uses fixed-size fields, but the padding rules
   // for 32-bit vs. 64-bit architectures dictate that it be
@@ -1430,15 +1470,121 @@ struct X64Arch : public BaseArch<SupportedArch::x86_64, WordSize64Defs> {
   RR_VERIFY_TYPE_ARCH(SupportedArch::x86_64, struct ::stat64, struct stat64);
 };
 
+struct ARMArch : public BaseArch<SupportedArch::ARM, WordSize32Defs> {
+  typedef BaseArch<SupportedArch::ARM, WordSize32Defs> Base;
+
+  // XXX khuey no idea if these are right, just trying to make it build.
+  static const size_t elfmachine = EM_ARM;
+#ifdef __ARMEL__
+  static const size_t elfendian = ELFDATA2LSB;
+#else
+#error Big endian ARM is not supported
+#endif
+
+  static const MmapCallingSemantics mmap_semantics = RegisterArguments;
+  static const CloneTLSType clone_tls_type = PthreadStructurePointer;
+  static const CloneParameterOrdering clone_parameter_ordering =
+      FlagsStackParentTLSChild;
+  static const SelectCallingSemantics select_semantics =
+      SelectRegisterArguments;
+  typedef uint16_t legacy_uid_t;
+  typedef uint16_t legacy_gid_t;
+
+  static const uint8_t syscall_insn[4];
+
+#include "SyscallEnumsARM.generated"
+
+  struct user_regs_struct {
+    uint32_t r[18];
+  };
+  RR_VERIFY_TYPE_ARCH(SupportedArch::ARM, ::user_regs_struct,
+                      user_regs_struct);
+
+  struct user_fpregs_struct {
+    struct fp_reg
+    {
+      uint32_t sign1:1;
+      uint32_t unused:15;
+      uint32_t sign2:1;
+      uint32_t exponent:14;
+      uint32_t j:1;
+      uint32_t mantissa1:31;
+      uint32_t mantissa0;
+    } fpregs[8];
+    uint32_t fpsr;
+    uint32_t fpcr;
+    unsigned char ftype[8];
+    uint32_t init_flag;
+  };
+
+  RR_VERIFY_TYPE_ARCH(SupportedArch::ARM, ::user_fpregs_struct,
+                      user_fpregs_struct);
+
+  struct stat {
+    dev_t st_dev;
+    ino_t st_ino;
+    mode_t st_mode;
+    nlink_t st_nlink;
+    uid_t st_uid;
+    gid_t st_gid;
+    dev_t st_rdev;
+    off_t st_size;
+    blksize_t st_blksize;
+    blkcnt_t st_blocks;
+    struct timespec st_atime_;
+    struct timespec st_mtime_;
+    struct timespec st_ctime_;
+    syscall_ulong_t unused[2];
+  };
+
+  RR_VERIFY_TYPE_ARCH(SupportedArch::ARM, struct ::stat, struct stat);
+
+  struct stat64 {
+    unsigned long long st_dev;
+    unsigned char padding[4];
+    ino_t __st_ino;
+    mode_t st_mode;
+    nlink_t st_nlink;
+    uid_t st_uid;
+    gid_t st_gid;
+    unsigned long long	st_rdev;
+    unsigned char   __pad3[4];
+
+    off64_t st_size;
+    blksize_t st_blksize;
+    blkcnt64_t st_blocks;
+
+    struct timespec st_atime_;
+    struct timespec st_mtime_;
+    struct timespec st_ctime_;
+
+    ino64_t st_ino;
+  };
+
+  RR_VERIFY_TYPE_ARCH(SupportedArch::ARM, struct ::stat64, struct stat64);
+
+  static int emulate_single_stepping(int how, Task* t);
+};
+
+#if !defined(__arm__)
 #define RR_ARCH_FUNCTION(f, arch, args...)                                     \
   switch (arch) {                                                              \
     default:                                                                   \
       assert(0 && "Unknown architecture");                                     \
-    case x86:                                                                  \
-      return f<rr::X86Arch>(args);                                             \
-    case x86_64:                                                               \
-      return f<rr::X64Arch>(args);                                             \
+    case ARM:                                                                  \
+      return f<rr::ARMArch>(args);                                             \
   }
+#else
+#define RR_ARCH_FUNCTION(f, arch, args...)                                     \
+  switch (arch) {                                                              \
+    default:                                                                   \
+      assert(0 && "Unknown architecture");                                     \
+    case ARM:                                                                  \
+      return f<rr::ARMArch>(args);                                             \
+  }
+#endif
+#define RR_NATIVE_ARCH_FUNCTION(f, args...)                                    \
+  RR_ARCH_FUNCTION(f, RR_NATIVE_ARCH, args)
 
 #include "SyscallHelperFunctions.generated"
 
@@ -1463,10 +1609,17 @@ ssize_t syscall_instruction_length(SupportedArch arch);
 typedef X86Arch NativeArch;
 #elif defined(__x86_64__)
 typedef X64Arch NativeArch;
+#elif defined(__arm__)
+typedef ARMArch NativeArch;
 #else
 #error need to define new NativeArch
 #endif
 
 } // namespace rr
+
+// Not defined on rpi :(
+#if !defined(O_PATH)
+#define O_PATH 010000000
+#endif
 
 #endif /* RR_KERNEL_ABI_H */

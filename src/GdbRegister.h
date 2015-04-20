@@ -151,6 +151,27 @@ enum GdbRegister {
   DREG_64_YMM15H,
   // Last register we can find in user_regs_struct (except for orig_rax).
   DREG_64_NUM_USER_REGS = DREG_64_GS + 1,
+
+  // ARM register numbers
+  DREG_ARM_R0 = 0,
+  DREG_ARM_R1,
+  DREG_ARM_R2,
+  DREG_ARM_R3,
+  DREG_ARM_R4,
+  DREG_ARM_R5,
+  DREG_ARM_R6,
+  DREG_ARM_R7,
+  DREG_ARM_R8,
+  DREG_ARM_R9,
+  DREG_ARM_R10,
+  DREG_ARM_R11,
+  DREG_ARM_R12,
+  DREG_ARM_SP,
+  DREG_ARM_LR,
+  DREG_ARM_PC,
+  DREG_ARM_ORIG_r0,
+  DREG_ARM_CPSR /*= 25*/,
+  DREG_NUM_LINUX_ARM,
 };
 
 #endif /* RR_GDB_REGISTER_H_ */

@@ -96,6 +96,10 @@
  * of the task that it has restored auxv vectors for.
  */
 #define SYS_rrcall_reload_auxv 446
+/**
+ * See include/rr/rr.h for documentation on SYS_rrcall_open_magic_save_fd.
+ */
+// #define SYS_rrcall_open_magic_save_fd 447
 
 /* Define macros that let us compile a struct definition either "natively"
  * (when included by preload.c) or as a template over Arch for use by rr.

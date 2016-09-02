@@ -65,6 +65,11 @@ public:
   void init_buffers();
   void post_exec();
   /**
+   * Open a magic save fd that allows tracees to write data that will be
+   * recorded now for later checking during replay.
+   */
+  void open_magic_save_fd();
+  /**
    * Called when SYS_rrcall_init_preload has happened.
    */
   virtual void at_preload_init();
@@ -498,6 +503,7 @@ private:
   }
 
   template <typename Arch> void init_buffers_arch();
+  template <typename Arch> void open_magic_save_fd_arch();
   template <typename Arch>
   void on_syscall_exit_arch(int syscallno, const Registers& regs);
   /** Helper function for update_sigaction. */

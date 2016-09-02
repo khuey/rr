@@ -39,13 +39,13 @@ static void notify_save_data_error(ReplayTask* t, remote_ptr<void> addr,
       << "Divergence in contents of 'tracee-save buffer'.  Recording executed\n"
          "\n"
          "  write("
-      << RR_MAGIC_SAVE_DATA_FD << ", " << addr << ", " << rec_buf_len
+      << "<magic save fd>" << ", " << addr << ", " << rec_buf_len
       << ")\n"
          "\n"
          "and replay executed\n"
          "\n"
          "  write("
-      << RR_MAGIC_SAVE_DATA_FD << ", " << addr << ", " << rep_buf_len
+      << "<magic save fd>" << ", " << addr << ", " << rep_buf_len
       << ")\n"
          "\n"
          "The contents of the tracee-save buffers have been dumped to disk.\n"

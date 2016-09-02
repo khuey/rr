@@ -485,6 +485,16 @@ template <typename Arch> void RecordTask::init_buffers_arch() {
 
 void RecordTask::init_buffers() { RR_ARCH_FUNCTION(init_buffers_arch, arch()); }
 
+template <typename Arch> void RecordTask::open_magic_save_fd_arch() {
+  AutoRemoteSyscalls remote(this);
+  AutoRestoreMem name(remote, "/dev/null");
+  int magic_fd = remote.syscall(syscall_number_for_open(arch()),
+                                name.get(), O_WRONLY);
+  remote.regs().set_syscall_result(magic_fd);
+}
+
+void RecordTask::open_magic_save_fd() { RR_ARCH_FUNCTION(open_magic_save_fd_arch, arch()); }
+
 template <typename Arch>
 void RecordTask::on_syscall_exit_arch(int syscallno, const Registers& regs) {
   if (regs.syscall_failed()) {

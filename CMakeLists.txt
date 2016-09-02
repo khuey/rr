@@ -598,6 +598,7 @@ set(BASIC_TESTS
   rusage
   samask
   save_data_fd
+  save_data_fd_exhaustion
   # sched_attr ... disabled since suitable headers are not widely available yet
   sched_setaffinity
   sched_setparam

@@ -3450,6 +3450,9 @@ static Switchable rec_prepare_syscall_arch(RecordTask* t,
       syscall_state.emulate_result(0);
       return PREVENT_SWITCH;
 
+    case SYS_rrcall_open_magic_save_fd:
+      return PREVENT_SWITCH;
+
     case SYS_rrcall_init_buffers:
       syscall_state.reg_parameter<rrcall_init_buffers_params<Arch> >(1, IN_OUT);
       return PREVENT_SWITCH;
@@ -4479,6 +4482,11 @@ static void rec_process_syscall_arch(RecordTask* t,
 
     case SYS_rrcall_init_preload: {
       t->at_preload_init();
+      break;
+    }
+
+    case SYS_rrcall_open_magic_save_fd: {
+      t->open_magic_save_fd();
       break;
     }
 

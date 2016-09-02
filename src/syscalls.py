@@ -1649,6 +1649,7 @@ rrcall_init_preload = IrregularEmulatedSyscall(x86=442, x64=442)
 rrcall_init_buffers = IrregularEmulatedSyscall(x86=443, x64=443)
 rrcall_notify_syscall_hook_exit = IrregularEmulatedSyscall(x86=444, x64=444)
 rrcall_notify_control_msg = IrregularEmulatedSyscall(x86=445, x64=445)
+rrcall_open_magic_save_fd = IrregularEmulatedSyscall(x86=447, x64=447)
 
 # These syscalls are also subsumed under socketcall on x86.
 socket = EmulatedSyscall(x86=359, x64=41)

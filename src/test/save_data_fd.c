@@ -15,7 +15,11 @@ int main(void) {
   atomic_printf("Read %zd random bytes (expected %zu)\n", nread, sizeof(buf));
   test_assert(nread == sizeof(buf));
 
-  check_data(buf, sizeof(buf));
+  int save_fd = syscall(SYS_rrcall_open_magic_save_fd);
+  syscall(SYS_write, save_fd, buf, sizeof(buf));
+  atomic_printf("Wrote %zu bytes to magic fd\n", sizeof(buf));
+
+  close(save_fd);
 
   atomic_puts("EXIT-SUCCESS");
   return 0;

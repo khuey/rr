@@ -23,8 +23,6 @@ int main(void) {
     dup(2);
   }
 
-  close(RR_MAGIC_SAVE_DATA_FD);
-
   /* init barrier */
   pthread_barrier_init(&bar, NULL, NUM_THREADS + 1);
   /* Create independent threads each of which will execute

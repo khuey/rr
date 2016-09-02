@@ -3,6 +3,7 @@
 #include "ReplayTask.h"
 
 #include "AutoRemoteSyscalls.h"
+#include "MagicSaveDataMonitor.h"
 #include "PreserveFileMonitor.h"
 #include "ReplaySession.h"
 #include "log.h"

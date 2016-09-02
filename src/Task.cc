@@ -548,6 +548,13 @@ void Task::on_syscall_exit_arch(int syscallno, const Registers& regs) {
       }
       return;
     }
+    case SYS_rrcall_open_magic_save_fd: {
+      int magic_fd = regs.syscall_result_signed();
+      if (magic_fd >= 0) {
+        fds->add_monitor(magic_fd, new MagicSaveDataMonitor());
+      }
+      return;
+    }
   }
 }
 
@@ -2148,7 +2155,6 @@ static void perform_remote_clone(Task* parent, AutoRemoteSyscalls& remote,
 static void setup_fd_table(FdTable& fds) {
   fds.add_monitor(STDOUT_FILENO, new StdioMonitor(STDOUT_FILENO));
   fds.add_monitor(STDERR_FILENO, new StdioMonitor(STDERR_FILENO));
-  fds.add_monitor(RR_MAGIC_SAVE_DATA_FD, new MagicSaveDataMonitor());
   fds.add_monitor(RR_RESERVED_ROOT_DIR_FD, new PreserveFileMonitor());
 }
 
@@ -2185,17 +2191,6 @@ static void set_up_process(Session& session, const ScopedFd& err_fd) {
   /* TODO tracees can probably undo some of the setup below
    * ... */
 
-  /* CLOEXEC so that the original fd here will be closed by the exec that's
-   * about to happen.
-   */
-  int fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
-  if (0 > fd) {
-    spawned_child_fatal_error(err_fd, "error opening /dev/null");
-  }
-  if (RR_MAGIC_SAVE_DATA_FD != dup2(fd, RR_MAGIC_SAVE_DATA_FD)) {
-    spawned_child_fatal_error(err_fd, "error duping to RR_MAGIC_SAVE_DATA_FD");
-  }
-
   // If we're running under rr then don't try to set up RR_RESERVED_ROOT_DIR_FD;
   // it should already be correct (unless someone chrooted in between,
   // which would be crazy ... though we could fix it by dynamically
@@ -2204,7 +2199,7 @@ static void set_up_process(Session& session, const ScopedFd& err_fd) {
     /* CLOEXEC so that the original fd here will be closed by the exec that's
      * about to happen.
      */
-    fd = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC);
+    int fd = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC);
     if (0 > fd) {
       spawned_child_fatal_error(err_fd, "error opening root directory");
     }

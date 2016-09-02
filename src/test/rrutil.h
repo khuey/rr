@@ -149,15 +149,6 @@ inline static int check_cond(int cond) {
 inline static pid_t sys_gettid(void) { return syscall(SYS_gettid); }
 
 /**
- * Ensure that |len| bytes of |buf| are the same across recording and
- * replay.
- */
-inline static void check_data(void* buf, size_t len) {
-  syscall(SYS_write, RR_MAGIC_SAVE_DATA_FD, buf, len);
-  atomic_printf("Wrote %zu bytes to magic fd\n", len);
-}
-
-/**
  * Return the current value of the time-stamp counter.
  */
 inline static uint64_t rdtsc(void) { return __rdtsc(); }

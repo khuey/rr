@@ -7,6 +7,7 @@
 
 #include <vector>
 
+#include "kernel_abi.h"
 #include "Registers.h"
 #include "ScopedFd.h"
 #include "Task.h"
@@ -80,6 +81,34 @@ private:
 
   AutoRestoreMem& operator=(const AutoRestoreMem&) = delete;
   AutoRestoreMem(const AutoRestoreMem&) = delete;
+  void* operator new(size_t) = delete;
+  void operator delete(void*) = delete;
+};
+
+/**
+ * A helper to remove the rlimits that protect rr's private fd area from being
+ * used by the tracee.
+ */
+class AutoUnprotectFds {
+public:
+  AutoUnprotectFds(AutoRemoteSyscalls& remote);
+  ~AutoUnprotectFds();
+
+private:
+  int lift_limits();
+  template <typename Arch>
+  static int lift_limits_arch(AutoUnprotectFds* self);
+
+  int restore_limits();
+  template <typename Arch>
+  static int restore_limits_arch(AutoUnprotectFds* self);
+
+  AutoRemoteSyscalls& remote;
+  KernelConstants::rlim64_t rlim_cur;
+  KernelConstants::rlim64_t rlim_max;
+
+  AutoUnprotectFds& operator=(const AutoUnprotectFds&) = delete;
+  AutoUnprotectFds(const AutoUnprotectFds&) = delete;
   void* operator new(size_t) = delete;
   void operator delete(void*) = delete;
 };

@@ -4476,6 +4476,30 @@ static void rec_process_syscall_arch(RecordTask* t,
       break;
     }
 
+    case Arch::prlimit64: {
+      int resource = t->regs().arg2();
+      remote_ptr<typename Arch::rlimit64> rlim = t->regs().arg3();
+      if (resource == RLIMIT_NOFILE && rlim) {
+        auto limits = t->read_mem(rlim);
+        ASSERT(t, (int)limits.rlim_cur <= t->root_fd() &&
+                  (int)limits.rlim_max > t->root_fd())
+          << "Tracee attempted to impinge on the private fd area!";
+      }
+      break;
+    }
+
+    case Arch::setrlimit: {
+      int resource = t->regs().arg1();
+      remote_ptr<typename Arch::rlimit> rlim = t->regs().arg2();
+      if (resource == RLIMIT_NOFILE && rlim) {
+        auto limits = t->read_mem(rlim);
+        ASSERT(t, (int)limits.rlim_cur <= t->root_fd() &&
+                  (int)limits.rlim_max > t->root_fd())
+          << "Tracee attempted to impinge on the private fd area!";
+      }
+      break;
+    }
+
     case SYS_rrcall_init_buffers:
       t->init_buffers();
       break;

@@ -185,9 +185,9 @@ public:
   std::string file_name_of_fd(int fd);
 
   /**
-   * Get the reserved root fd for this process.
+   * The reserved root fd for this process.
    */
-  int get_root_fd();
+  int root_fd();
 
   /**
    * Force the wait status of this to |status|, as if
@@ -714,6 +714,8 @@ public:
   remote_ptr<void> scratch_ptr;
   ssize_t scratch_size;
 
+  /* The child's root dir fd, and the beginning of the reserved fds */
+  int root_dir_fd_child;
   /* The child's desched counter event fd number */
   int desched_fd_child;
   /* The child's cloned_file_data_fd */
@@ -841,6 +843,11 @@ protected:
    */
   ssize_t write_bytes_ptrace(remote_ptr<void> addr, ssize_t buf_size,
                              const void* buf);
+
+  /**
+   * Fetch the reserved root fd from the tracee.
+   */
+  int get_root_fd();
 
   /**
    * Try writing 'buf' to 'addr' by replacing pages in the tracee

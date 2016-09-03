@@ -17,6 +17,7 @@
 #include <string.h>
 #include <sys/personality.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/user.h>
@@ -64,6 +65,8 @@ Task::Task(Session& session, pid_t _tid, pid_t _rec_tid, uint32_t serial,
       thread_locals_initialized(false),
       scratch_ptr(),
       scratch_size(),
+      // This will be initialized when we open_mem_fd.
+      root_dir_fd_child(-1),
       // This will be initialized when the syscall buffer is.
       desched_fd_child(-1),
       // This will be initialized when the syscall buffer is.
@@ -225,8 +228,55 @@ string Task::file_name_of_fd(int fd) {
   return path;
 }
 
+static int pick_reserved_fd_boundary(int max_fd) {
+  if (max_fd < 1024) {
+    LOG(fatal) << "We should have caught this earlier!";
+    return -1;
+  }
+
+  // If there are at least 2048 fds available, take 1024. Otherwise take half
+  // of what is available.
+  if (max_fd >= 2048) {
+    return max_fd - 1024;
+  } else {
+    return max_fd / 2;
+  }
+}
+
+template <typename Arch>
+static int get_root_fd_arch(Task* t) {
+  AutoRemoteSyscalls remote(t);
+
+  typename Arch::rlimit64 limits;
+  limits.rlim_cur = 0;
+  limits.rlim_max = 0;
+
+  {
+    AutoRestoreMem remote_limits(remote, (const uint8_t*)&limits,
+                                 sizeof(limits));
+    auto ptr = remote_limits.get();
+    int result = remote.syscall(syscall_number_for_prlimit64(t->arch()), 0,
+                                RLIMIT_NOFILE, NULL, ptr);
+    ASSERT(t, result == 0);
+    limits = t->read_mem(ptr.cast<typename Arch::rlimit64>());
+  }
+
+  return pick_reserved_fd_boundary(limits.rlim_max);
+}
+
 int Task::get_root_fd() {
-  return RR_RESERVED_ROOT_DIR_FD;
+  RR_ARCH_FUNCTION(get_root_fd_arch, arch(), this);
+}
+
+int Task::root_fd() {
+  if (root_dir_fd_child != -1) {
+    return root_dir_fd_child;
+  }
+
+  // We don't have it yet!
+  root_dir_fd_child = get_root_fd();
+  fds->add_monitor(root_dir_fd_child, new PreserveFileMonitor());
+  return root_dir_fd_child;
 }
 
 const siginfo_t& Task::get_siginfo() {
@@ -1465,6 +1515,7 @@ Task* Task::clone(int flags, remote_ptr<void> stack, remote_ptr<void> tls,
     t->fds = fds->clone(t);
     close_buffers = fds->task_set().size() > 1;
   }
+  t->root_dir_fd_child = root_dir_fd_child;
 
   t->top_of_stack = stack;
   // Clone children, both thread and fork, inherit the parent
@@ -1736,6 +1787,7 @@ void Task::open_mem_fd() {
   // the child has to open its own mem file (unless rr is root).
   static const char path[] = "/proc/self/mem";
 
+  int child_root_fd = root_fd(); // Will fetch it if it's not present.
   AutoRemoteSyscalls remote(this);
   long remote_fd;
   {
@@ -1743,7 +1795,7 @@ void Task::open_mem_fd() {
     // skip leading '/' since we want the path to be relative to the root fd
     remote_fd =
         remote.syscall(syscall_number_for_openat(arch()),
-                       get_root_fd(), remote_path.get() + 1, O_RDWR);
+                       child_root_fd, remote_path.get() + 1, O_RDWR);
   }
   if (remote_fd < 0) {
     // This can happen when a process fork()s after setuid; it can no longer
@@ -2159,7 +2211,6 @@ static void perform_remote_clone(Task* parent, AutoRemoteSyscalls& remote,
 static void setup_fd_table(FdTable& fds) {
   fds.add_monitor(STDOUT_FILENO, new StdioMonitor(STDOUT_FILENO));
   fds.add_monitor(STDERR_FILENO, new StdioMonitor(STDERR_FILENO));
-  fds.add_monitor(RR_RESERVED_ROOT_DIR_FD, new PreserveFileMonitor());
 }
 
 static void set_cpu_affinity(int cpu) {
@@ -2200,6 +2251,22 @@ static void set_up_process(Session& session, const ScopedFd& err_fd) {
   // which would be crazy ... though we could fix it by dynamically
   // assigning RR_RESERVED_ROOT_DIR_FD.)
   if (!running_under_rr()) {
+    NativeArch::rlimit old_limits, new_limits;
+    prlimit(0, RLIMIT_NOFILE, NULL, (rlimit*)&old_limits);
+
+    if (old_limits.rlim_cur < 1024 || old_limits.rlim_max < 1024) {
+      spawned_child_fatal_error(err_fd, "rr requires at least 1024 fds");
+    }
+
+    new_limits.rlim_max = old_limits.rlim_max;
+    new_limits.rlim_cur = old_limits.rlim_max;
+    prlimit(0, RLIMIT_NOFILE, (rlimit*)&new_limits, NULL);
+
+    int desired_fd = pick_reserved_fd_boundary(new_limits.rlim_cur);
+    if (0 > desired_fd) {
+      spawned_child_fatal_error(err_fd, "error picking fd boundary");
+    }
+
     /* CLOEXEC so that the original fd here will be closed by the exec that's
      * about to happen.
      */
@@ -2207,10 +2274,12 @@ static void set_up_process(Session& session, const ScopedFd& err_fd) {
     if (0 > fd) {
       spawned_child_fatal_error(err_fd, "error opening root directory");
     }
-    if (RR_RESERVED_ROOT_DIR_FD != dup2(fd, RR_RESERVED_ROOT_DIR_FD)) {
-      spawned_child_fatal_error(err_fd,
-                                "error duping to RR_RESERVED_ROOT_DIR_FD");
+    if (desired_fd != dup2(fd, desired_fd)) {
+      spawned_child_fatal_error(err_fd, "error duping to desired_fd");
     }
+
+    old_limits.rlim_cur = std::min<NativeArch::rlim_t>(old_limits.rlim_cur, desired_fd);
+    prlimit(0, RLIMIT_NOFILE, (rlimit*)&old_limits, NULL);
   }
 
   if (session.is_replaying()) {

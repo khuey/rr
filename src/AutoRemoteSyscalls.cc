@@ -4,6 +4,7 @@
 
 #include <limits.h>
 #include <linux/net.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 
@@ -55,6 +56,75 @@ AutoRestoreMem::~AutoRestoreMem() {
 
   remote.regs().set_sp(remote.regs().sp() + len);
   remote.task()->set_regs(remote.regs());
+}
+
+template <typename Arch>
+int AutoUnprotectFds::restore_limits_arch(AutoUnprotectFds* self) {
+  auto& remote = self->remote;
+  Task* t = remote.task();
+  typename Arch::rlimit64 limits;
+  limits.rlim_cur = self->rlim_cur;
+  limits.rlim_max = self->rlim_max;
+
+  {
+    AutoRestoreMem remote_limits(remote, &limits, sizeof(limits));
+    auto ptr = remote_limits.get();
+    remote.syscall(syscall_number_for_prlimit64(t->arch()), 0,
+                   RLIMIT_NOFILE, ptr, NULL);
+  }
+
+  return 0;
+}
+
+template <typename Arch>
+int AutoUnprotectFds::lift_limits_arch(AutoUnprotectFds* self) {
+  auto& remote = self->remote;
+  Task* t = remote.task();
+  typename Arch::rlimit64 limits;
+  limits.rlim_cur = 0;
+  limits.rlim_max = 0;
+
+  {
+    AutoRestoreMem remote_limits(remote, &limits, sizeof(limits));
+    auto ptr = remote_limits.get();
+    int result = remote.syscall(syscall_number_for_prlimit64(t->arch()), 0,
+                                RLIMIT_NOFILE, NULL, ptr);
+    ASSERT(t, result == 0);
+    limits = t->read_mem(ptr.cast<typename Arch::rlimit64>());
+  }
+
+  self->rlim_cur = limits.rlim_cur;
+  self->rlim_max = limits.rlim_max;
+  limits.rlim_cur = limits.rlim_max;
+
+  {
+    AutoRestoreMem remote_limits(remote, &limits, sizeof(limits));
+    auto ptr = remote_limits.get();
+    int result = remote.syscall(syscall_number_for_prlimit64(t->arch()), 0,
+                                RLIMIT_NOFILE, ptr, NULL);
+    ASSERT(t, result == 0);
+  }
+
+  return 0;
+}
+
+int AutoUnprotectFds::lift_limits() {
+  RR_ARCH_FUNCTION(lift_limits_arch, remote.task()->arch(), this);
+}
+
+int AutoUnprotectFds::restore_limits() {
+  RR_ARCH_FUNCTION(restore_limits_arch, remote.task()->arch(), this);
+}
+
+AutoUnprotectFds::AutoUnprotectFds(AutoRemoteSyscalls& remote)
+  : remote (remote),
+    rlim_cur(-1) {
+  lift_limits();
+}
+
+AutoUnprotectFds::~AutoUnprotectFds()
+{
+  restore_limits();
 }
 
 AutoRemoteSyscalls::AutoRemoteSyscalls(Task* t,
@@ -272,7 +342,7 @@ static void child_connect_socket(AutoRemoteSyscalls& remote,
   *cwd_fd = remote.syscall(syscall_number_for_open(Arch::arch()), remote_dot,
                            O_PATH | O_DIRECTORY);
   ASSERT(remote.task(), *cwd_fd >= 0 || *cwd_fd == -EACCES);
-  remote.infallible_syscall(Arch::fchdir, remote.task()->get_root_fd());
+  remote.infallible_syscall(Arch::fchdir, remote.task()->root_fd());
 
   auto remote_addr = allocate<typename Arch::sockaddr_un>(&buf_end, remote_buf);
   remote.task()->write_mem(remote_addr, addr);

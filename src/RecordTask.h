@@ -615,6 +615,7 @@ public:
 
   // Our value for PR_GET/SET_TSC (one of PR_TSC_ENABLED, PR_TSC_SIGSEGV).
   int tsc_mode;
+
   // The current stack of events being processed.  (We use a
   // deque instead of a stack because we need to iterate the
   // events.)

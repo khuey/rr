@@ -282,7 +282,7 @@ void AddressSpace::map_rr_page(Task* t) {
     AutoRestoreMem child_path(remote, path.c_str());
     // skip leading '/' since we want the path to be relative to the root fd
     long child_fd =
-        remote.syscall(syscall_number_for_openat(arch), t->get_root_fd(),
+        remote.syscall(syscall_number_for_openat(arch), t->root_fd(),
                        child_path.get() + 1, O_RDONLY);
     if (child_fd >= 0) {
       remote.infallible_mmap_syscall(rr_page_start(), rr_page_size(), prot,

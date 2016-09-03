@@ -402,6 +402,9 @@ template <typename Arch> void RecordTask::init_buffers_arch() {
   // signals.
   AutoRemoteSyscalls remote(this);
 
+  // These fds need to go in the private area.
+  AutoUnprotectFds make_fds_private(remote);
+
   // Arguments to the rrcall.
   remote_ptr<rrcall_init_buffers_params<Arch> > child_args = regs().arg1();
   auto args = read_mem(child_args);
@@ -412,13 +415,13 @@ template <typename Arch> void RecordTask::init_buffers_arch() {
     KernelMapping syscallbuf_km = init_syscall_buffer(remote, nullptr);
     writeback_sigmask();
     args.syscallbuf_ptr = syscallbuf_child;
-    // Get a new desched fd.
+    // Get a new desched fd, somewhere above the root fd in the private area.
     desched_fd_child = remote.syscall(syscall_number_for_fcntl(arch()),
                                       args.desched_counter_fd, F_DUPFD_CLOEXEC,
-                                      RR_DESCHED_EVENT_FLOOR_FD);
-    args.desched_counter_fd = desched_fd_child;
-    // Prevent the child from closing this fd
+                                      root_fd());
+    // Prevent the child from closing this fd if it does guess its location.
     fds->add_monitor(desched_fd_child, new PreserveFileMonitor());
+    args.desched_counter_fd = desched_fd_child;
     desched_fd = remote.retrieve_fd(desched_fd_child);
 
     auto record_in_trace = trace_writer().write_mapped_region(
@@ -430,18 +433,15 @@ template <typename Arch> void RecordTask::init_buffers_arch() {
         session().use_read_cloning()) {
       string clone_file_name = trace_writer().file_data_clone_file_name(tuid());
       AutoRestoreMem name(remote, clone_file_name.c_str());
-      int cloned_file_data = remote.syscall(syscall_number_for_openat(arch()),
-                                            get_root_fd(), name.get(),
-                                            O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+      int cloned_file_data =
+          remote.syscall(syscall_number_for_openat(arch()),
+                         root_fd(), name.get(),
+                         O_RDWR | O_CREAT | O_CLOEXEC, 0600);
       if (cloned_file_data >= 0) {
-        /**
-         * Avoid using low-numbered file descriptors since that can confuse
-         * developers.
-         */
-        int base_fd = 300 + (tid % 500);
+        // Dup the cloned_file_data into the private area.
         cloned_file_data_fd_child =
             remote.syscall(syscall_number_for_fcntl(arch()), cloned_file_data,
-                           F_DUPFD_CLOEXEC, base_fd);
+                           F_DUPFD_CLOEXEC, root_fd());
         if (cloned_file_data_fd_child < 0) {
           ASSERT(this, cloned_file_data_fd_child < 0);
           LOG(warn) << "Couldn't dup clone-data file to free fd";
@@ -473,6 +473,12 @@ template <typename Arch> void RecordTask::init_buffers_arch() {
   // away in the return value slot so that we can easily check
   // that we map the segment at the same addr during replay.
   remote.regs().set_syscall_result(syscallbuf_child);
+
+  if (args.desched_counter_fd < root_fd() ||
+      args.cloned_file_data_fd < root_fd()) {
+    LOG(warn) << "Exhausted the private fd area, rr internals may be visible to "
+              << "tracee code.";
+  }
 }
 
 void RecordTask::init_buffers() { RR_ARCH_FUNCTION(init_buffers_arch, arch()); }

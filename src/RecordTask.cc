@@ -428,7 +428,11 @@ template <typename Arch> void RecordTask::init_buffers_arch() {
     KernelMapping syscallbuf_km = init_syscall_buffer(remote, nullptr);
     writeback_sigmask();
     args.syscallbuf_ptr = syscallbuf_child;
-    desched_fd_child = args.desched_counter_fd;
+    // Get a new desched fd.
+    desched_fd_child = remote.syscall(syscall_number_for_fcntl(arch()),
+                                      args.desched_counter_fd, F_DUPFD_CLOEXEC,
+                                      RR_DESCHED_EVENT_FLOOR_FD);
+    args.desched_counter_fd = desched_fd_child;
     // Prevent the child from closing this fd
     fds->add_monitor(desched_fd_child, new PreserveFileMonitor());
     desched_fd = remote.retrieve_fd(desched_fd_child);

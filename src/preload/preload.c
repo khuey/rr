@@ -290,17 +290,6 @@ static long traced_raw_syscall(const struct syscall_info* call) {
 #define RR_FCNTL_SYSCALL SYS_fcntl
 #endif
 
-static int privileged_traced_fcntl(int fd, int cmd, ...) {
-  va_list ap;
-  void* arg;
-
-  va_start(ap, cmd);
-  arg = va_arg(ap, void*);
-  va_end(ap);
-
-  return privileged_traced_syscall3(RR_FCNTL_SYSCALL, fd, cmd, arg);
-}
-
 static pid_t privileged_traced_getpid(void) {
   return privileged_traced_syscall0(SYS_getpid);
 }
@@ -499,10 +488,9 @@ static void rrcall_init_buffers(struct rrcall_init_buffers_params* args) {
  * Return a counter that generates a signal targeted at this task
  * every time the task is descheduled |nr_descheds| times.
  */
-static int open_desched_event_counter(size_t nr_descheds, pid_t tid) {
+static int open_desched_event_counter(size_t nr_descheds) {
   struct perf_event_attr attr;
-  int tmp_fd, fd;
-  struct f_owner_ex own;
+  int fd;
 
   memset(&attr, 0, sizeof(attr));
   attr.size = sizeof(attr);
@@ -511,18 +499,22 @@ static int open_desched_event_counter(size_t nr_descheds, pid_t tid) {
   attr.disabled = 1;
   attr.sample_period = nr_descheds;
 
-  tmp_fd = privileged_traced_perf_event_open(&attr, 0 /*self*/, -1 /*any cpu*/,
-                                             -1, 0);
-  if (0 > tmp_fd) {
+  fd = privileged_traced_perf_event_open(&attr, 0 /*self*/, -1 /*any cpu*/,
+                                         -1, 0);
+  if (0 > fd) {
     fatal("Failed to perf_event_open(cs, period=%zu)", nr_descheds);
   }
-  fd = privileged_traced_fcntl(tmp_fd, F_DUPFD_CLOEXEC,
-                               RR_DESCHED_EVENT_FLOOR_FD);
-  if (0 > fd) {
-    fatal("Failed to dup desched fd");
-  }
+  return fd;
+}
+
+static void finish_desched_event_counter(int tmp_fd, int fd, pid_t tid) {
+  struct f_owner_ex own;
+
   if (privileged_untraced_close(tmp_fd)) {
     fatal("Failed to close tmp_fd");
+  }
+  if (fd < 0) {
+    fatal("Failed to dupe desched fd");
   }
   if (privileged_untraced_fcntl(fd, F_SETFL, O_ASYNC)) {
     fatal("Failed to fcntl(O_ASYNC) the desched counter");
@@ -537,7 +529,7 @@ static int open_desched_event_counter(size_t nr_descheds, pid_t tid) {
           SYSCALLBUF_DESCHED_SIGNAL);
   }
 
-  return fd;
+  desched_counter_fd = fd;
 }
 
 /**
@@ -555,10 +547,8 @@ static void init_thread(void) {
   }
 
   /* NB: we want this setup emulated during replay. */
-  desched_counter_fd =
-      open_desched_event_counter(1, privileged_traced_gettid());
-
-  args.desched_counter_fd = desched_counter_fd;
+  int tmp_desched_counter_fd = open_desched_event_counter(1);
+  args.desched_counter_fd = tmp_desched_counter_fd;
 
   /* Trap to rr: let the magic begin!
    *
@@ -568,6 +558,10 @@ static void init_thread(void) {
    * the signal is unblocked. */
   rrcall_init_buffers(&args);
 
+  /* rr moved the desched counter fd */
+  finish_desched_event_counter(tmp_desched_counter_fd,
+                               args.desched_counter_fd,
+                               privileged_traced_gettid());
   cloned_file_data_fd = args.cloned_file_data_fd;
   /* rr initializes the buffer header. */
   buffer = args.syscallbuf_ptr;

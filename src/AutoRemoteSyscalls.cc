@@ -272,7 +272,7 @@ static void child_connect_socket(AutoRemoteSyscalls& remote,
   *cwd_fd = remote.syscall(syscall_number_for_open(Arch::arch()), remote_dot,
                            O_PATH | O_DIRECTORY);
   ASSERT(remote.task(), *cwd_fd >= 0 || *cwd_fd == -EACCES);
-  remote.infallible_syscall(Arch::fchdir, RR_RESERVED_ROOT_DIR_FD);
+  remote.infallible_syscall(Arch::fchdir, remote.task()->get_root_fd());
 
   auto remote_addr = allocate<typename Arch::sockaddr_un>(&buf_end, remote_buf);
   remote.task()->write_mem(remote_addr, addr);

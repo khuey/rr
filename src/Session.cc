@@ -414,7 +414,7 @@ static void remap_shared_mmap(AutoRemoteSyscalls& remote, EmuFs& emu_fs,
     // is read-only. We might mprotect it to read-write later.
     // skip leading '/' since we want the path to be relative to the root fd
     remote_fd = remote.infallible_syscall(
-        syscall_number_for_openat(remote.arch()), RR_RESERVED_ROOT_DIR_FD,
+        syscall_number_for_openat(remote.arch()), remote.task()->get_root_fd(),
         child_path.get() + 1, O_RDWR);
     if (0 > remote_fd) {
       FATAL() << "Couldn't open " << path << " in tracee";
@@ -462,7 +462,7 @@ KernelMapping Session::create_shared_mmap(
     AutoRestoreMem child_path(remote, path);
     // skip leading '/' since we want the path to be relative to the root fd
     child_shmem_fd = remote.infallible_syscall(
-        syscall_number_for_openat(remote.arch()), RR_RESERVED_ROOT_DIR_FD,
+        syscall_number_for_openat(remote.arch()), remote.task()->get_root_fd(),
         child_path.get() + 1, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
   }
 

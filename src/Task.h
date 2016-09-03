@@ -185,6 +185,11 @@ public:
   std::string file_name_of_fd(int fd);
 
   /**
+   * Get the reserved root fd for this process.
+   */
+  int get_root_fd();
+
+  /**
    * Force the wait status of this to |status|, as if
    * |wait()/try_wait()| had returned it. Call this whenever a waitpid
    * returned activity for this past.

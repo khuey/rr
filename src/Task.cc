@@ -225,6 +225,10 @@ string Task::file_name_of_fd(int fd) {
   return path;
 }
 
+int Task::get_root_fd() {
+  return RR_RESERVED_ROOT_DIR_FD;
+}
+
 const siginfo_t& Task::get_siginfo() {
   assert(stop_sig());
   return pending_siginfo;
@@ -1739,7 +1743,7 @@ void Task::open_mem_fd() {
     // skip leading '/' since we want the path to be relative to the root fd
     remote_fd =
         remote.syscall(syscall_number_for_openat(arch()),
-                       RR_RESERVED_ROOT_DIR_FD, remote_path.get() + 1, O_RDWR);
+                       get_root_fd(), remote_path.get() + 1, O_RDWR);
   }
   if (remote_fd < 0) {
     // This can happen when a process fork()s after setuid; it can no longer

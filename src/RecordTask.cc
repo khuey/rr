@@ -396,22 +396,6 @@ void RecordTask::at_preload_init() {
   do_preload_init(this);
 }
 
-/**
- * Avoid using low-numbered file descriptors since that can confuse
- * developers.
- */
-static int find_free_file_descriptor(pid_t for_tid) {
-  int fd = 300 + (for_tid % 500);
-  while (true) {
-    char buf[PATH_MAX];
-    sprintf(buf, "/proc/%d/fd/%d", for_tid, fd);
-    if (access(buf, F_OK) == -1 && errno == ENOENT) {
-      return fd;
-    }
-    ++fd;
-  }
-}
-
 template <typename Arch> void RecordTask::init_buffers_arch() {
   // NB: the tracee can't be interrupted with a signal while
   // we're processing the rrcall, because it's masked off all
@@ -450,11 +434,15 @@ template <typename Arch> void RecordTask::init_buffers_arch() {
                                             get_root_fd(), name.get(),
                                             O_RDWR | O_CREAT | O_CLOEXEC, 0600);
       if (cloned_file_data >= 0) {
-        int free_fd = find_free_file_descriptor(tid);
+        /**
+         * Avoid using low-numbered file descriptors since that can confuse
+         * developers.
+         */
+        int base_fd = 300 + (tid % 500);
         cloned_file_data_fd_child =
-            remote.syscall(syscall_number_for_dup3(arch()), cloned_file_data,
-                           free_fd, O_CLOEXEC);
-        if (cloned_file_data_fd_child != free_fd) {
+            remote.syscall(syscall_number_for_fcntl(arch()), cloned_file_data,
+                           F_DUPFD_CLOEXEC, base_fd);
+        if (cloned_file_data_fd_child < 0) {
           ASSERT(this, cloned_file_data_fd_child < 0);
           LOG(warn) << "Couldn't dup clone-data file to free fd";
           cloned_file_data_fd_child = cloned_file_data;

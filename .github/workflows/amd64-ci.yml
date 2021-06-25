@@ -10,3 +10,5 @@ jobs:
     - run: cmake $GITHUB_WORKSPACE -Ddisable32bit=ON
     - run: make -j8
     - run: make check
+    - run: cd .. && rm -rf obj-rr
+      if: ${{ always() }}

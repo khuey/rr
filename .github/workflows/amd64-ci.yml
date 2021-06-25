@@ -2,7 +2,7 @@ name: rr x86-64 CI
 on: [push]
 jobs:
   x86-64-ci:
-    runs-on: [self-hosted, linux, x64, rr]
+    runs-on: [self-hosted, linux, x64, rr] 
     steps:
     - uses: actions/checkout@v2
     - run: mkdir obj-rr

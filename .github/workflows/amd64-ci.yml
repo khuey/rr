@@ -1,0 +1,12 @@
+name: rr x86-64 CI
+on: [push]
+jobs:
+  x86-64-ci:
+    runs-on: [self-hosted, linux, x64, rr]
+    steps:
+    - uses: actions/checkout@v2
+    - run: mkdir obj-rr
+    - run: cd obj-rr
+    - run: cmake $GITHUB_WORKSPACE -Ddisable32bit=ON
+    - run: make -j8
+    - run: make check

@@ -33,3 +33,4 @@ cmake .. $DEVICE_CMAKE_DEFS \
       -DZLIB_LDFLAGS="-lz" \
       -DEXTRA_EXTERNAL_SOLIBS="capnproto-c++-0.9.1/src/kj/libkj.so;capnproto-c++-0.9.1/src/capnp/libcapnp.so"
 make -j8
+cpack -G TGZ

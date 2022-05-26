@@ -1,0 +1,5 @@
+steps:
+  - name: "gcr.io/rr-android-testing/android:31-ndk-r23b"
+    args: []
+    timeout: 30m
+timeout: 30m

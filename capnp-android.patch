@@ -1,0 +1,22 @@
+commit d8099df419ba9aa3f3c0e1128612b2862ffa226e
+Author: Kyle Huey <khuey@kylehuey.com>
+Date:   Wed May 25 19:41:08 2022 -0700
+
+    Fix unused variable warning src/kj/source-location.h:104:68: error: unused parameter 'l' [-Werror,-Wunused-parameter]
+    KJ_UNUSED static kj::String KJ_STRINGIFY(const NoopSourceLocation& l) {
+    
+    As seen on "Android (7714059, based on r416183c1) clang version 12.0.8 (https://android.googlesource.com/toolchain/llvm-project c935d99d7cf2016289302412d708641d52d2f7ee)"
+
+diff --git a/c++/src/kj/source-location.h b/c++/src/kj/source-location.h
+index ebcd4d3f..02f16588 100644
+--- a/c++/src/kj/source-location.h
++++ b/c++/src/kj/source-location.h
+@@ -101,7 +101,7 @@ class NoopSourceLocation {
+   // isn't accidentally used in the wrong compilation context.
+ };
+ 
+-KJ_UNUSED static kj::String KJ_STRINGIFY(const NoopSourceLocation& l) {
++KJ_UNUSED static kj::String KJ_STRINGIFY(const NoopSourceLocation&) {
+   return kj::String();
+ }
+ }  // namespace kj

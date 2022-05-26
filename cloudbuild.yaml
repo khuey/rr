@@ -3,3 +3,7 @@ steps:
     args: []
     timeout: 30m
 timeout: 30m
+artifacts:
+  objects:
+    location: 'gs://rr-android-testing_artifacts/rr'
+    paths: ["obj/dist/rr-5.5.0-Android-x86_64.tar.gz"]

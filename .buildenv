@@ -30,5 +30,6 @@ cmake .. $DEVICE_CMAKE_DEFS \
       -DSKIP_PKGCONFIG=True \
       -DCAPNP_CFLAGS=-I../capnproto-c++-0.9.1/src/ \
       -DCAPNP_LDFLAGS="-L../capnproto-c++-0.9.1/src/capnp -lcapnp -L../capnproto-c++-0.9.1/src/kj -lkj" \
-      -DZLIB_LDFLAGS="-lz"
+      -DZLIB_LDFLAGS="-lz" \
+      -DEXTRA_EXTERNAL_SOLIBS="capnproto-c++-0.9.1/src/kj/libkj.so;capnproto-c++-0.9.1/src/capnp/libcapnp.so"
 make -j8

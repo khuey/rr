@@ -26,7 +26,9 @@ mkdir obj
 cd obj
 cmake .. $DEVICE_CMAKE_DEFS \
       -Ddisable32bit=True \
-      -DBUILD_TESTS=False \
+      -DBUILD_TESTS=True \
+      -DWILL_RUN_TESTS=False \
+      -DINSTALL_TESTSUITE=True \
       -DSKIP_PKGCONFIG=True \
       -DCAPNP_CFLAGS=-I../capnproto-c++-0.9.1/src/ \
       -DCAPNP_LDFLAGS="-L../capnproto-c++-0.9.1/src/capnp -lcapnp -L../capnproto-c++-0.9.1/src/kj -lkj" \

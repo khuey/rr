@@ -340,6 +340,9 @@ list(REMOVE_ITEM CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
 
 # Test only symbols
 check_symbol_exists(pthread_mutexattr_setrobust "pthread.h" HAVE_ROBUST_MUTEX)
+list(APPEND CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+check_symbol_exists(pkey_alloc "sys/mman.h" HAVE_PKEYS)
+list(REMOVE_ITEM CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
 
 set(Python_ADDITIONAL_VERSIONS 3 3.8 3.7 3.6 3.5 3.4 3.3 3.2 3.1 3.0)
 find_package(PythonInterp 3 REQUIRED)
@@ -1084,7 +1087,6 @@ set(BASIC_TESTS
   pid_ns_segv
   pid_ns_shutdown
   pidfd
-  x86/pkeys
   poll_sig_race
   ppoll
   prctl
@@ -1295,6 +1297,10 @@ endif()
 
 if(HAVE_ROBUST_MUTEX)
   set(BASIC_TESTS ${BASIC_TESTS} robust_futex)
+endif()
+
+if(HAVE_PKEYS)
+  set(BASIC_TESTS ${BASIC_TESTS} x86/pkeys)
 endif()
 
 set(BASIC_CPP_TESTS

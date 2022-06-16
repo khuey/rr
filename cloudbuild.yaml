@@ -1,8 +1,8 @@
 steps:
   - name: "gcr.io/rr-android-testing/android:31-ndk-r23b"
     args: []
-    timeout: 30m
-timeout: 30m
+    timeout: 60m
+timeout: 60m
 artifacts:
   objects:
     location: 'gs://rr-android-testing_artifacts/rr'

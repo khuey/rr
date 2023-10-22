@@ -226,11 +226,24 @@ struct DwoInfo {
   uint64_t id;
 };
 
+class ExternalDebuginfoFileReader: public ElfFileReader {
+public:
+  ExternalDebuginfoFileReader(ScopedFd& fd, string chosen_debug_dir)
+    : ElfFileReader(fd),
+      chosen_debug_dir(chosen_debug_dir)
+  {}
+
+  // If non-empty, the user-provided debug info directory we used
+  // to find this file.
+  string chosen_debug_dir;
+};
+
 static bool process_compilation_units(ElfFileReader& reader,
                                       ElfFileReader* sup_reader,
                                       const string& trace_relative_name,
                                       const string& original_file_name,
                                       const string& comp_dir_substitution,
+                                      const string* debug_file_directory,
                                       set<string>* file_names, vector<DwoInfo>* dwos,
                                       DirExistsCache& dir_exists_cache) {
   string build_id = reader.read_buildid();
@@ -282,12 +295,15 @@ static bool process_compilation_units(ElfFileReader& reader,
     } else {
       cu.set_str_offsets_base(0);
     }
-    const char* original_comp_dir = cu.die().string_attr(cu, DW_AT_comp_dir, debug_strs, &ok);;
-    const char* comp_dir;
+    const char* original_comp_dir = cu.die().string_attr(cu, DW_AT_comp_dir, debug_strs, &ok);
+    string comp_dir;
     if (!comp_dir_substitution.empty()) {
-      comp_dir = comp_dir_substitution.c_str();
+      comp_dir = comp_dir_substitution;
     } else {
-      comp_dir = original_comp_dir;
+      if (debug_file_directory) {
+        comp_dir = *debug_file_directory;
+      }
+      comp_dir += original_comp_dir;
       if (!ok) {
         continue;
       }
@@ -313,11 +329,8 @@ static bool process_compilation_units(ElfFileReader& reader,
       }
       if (has_dwo_id) {
         string full_name;
-        if (resolve_file_name(original_file_name.c_str(), comp_dir, original_comp_dir, comp_dir_substitution, nullptr, dwo_name, dir_exists_cache, full_name)) {
-          string c;
-          if (comp_dir) {
-            c = comp_dir;
-          }
+        if (resolve_file_name(original_file_name.c_str(), comp_dir.c_str(), original_comp_dir, comp_dir_substitution, nullptr, dwo_name, dir_exists_cache, full_name)) {
+          string c = comp_dir;
           dwos->push_back({ dwo_name, trace_relative_name, build_id, std::move(c), full_name, dwo_id });
         } else {
           FATAL() << "DWO missing due to relative path " << full_name;
@@ -332,7 +345,7 @@ static bool process_compilation_units(ElfFileReader& reader,
     }
     if (source_file_name) {
       string full_name;
-      if (resolve_file_name(original_file_name.c_str(), comp_dir, original_comp_dir, comp_dir_substitution, nullptr, source_file_name, dir_exists_cache, full_name)) {
+      if (resolve_file_name(original_file_name.c_str(), comp_dir.c_str(), original_comp_dir, comp_dir_substitution, nullptr, source_file_name, dir_exists_cache, full_name)) {
         file_names->insert(full_name);
       }
     }
@@ -351,7 +364,7 @@ static bool process_compilation_units(ElfFileReader& reader,
       }
       const char* dir = lines.directories()[f.directory_index];
       string full_name;
-      if (resolve_file_name(original_file_name.c_str(), comp_dir, original_comp_dir, comp_dir_substitution, dir, f.file_name, dir_exists_cache, full_name)) {
+      if (resolve_file_name(original_file_name.c_str(), comp_dir.c_str(), original_comp_dir, comp_dir_substitution, dir, f.file_name, dir_exists_cache, full_name)) {
         file_names->insert(full_name);
       }
     }
@@ -381,7 +394,7 @@ struct ExternalDebugInfo {
   }
 };
 
-static unique_ptr<ElfFileReader>
+static unique_ptr<ExternalDebuginfoFileReader>
 find_auxiliary_file(const string& original_file_name,
                     const string& aux_file_name,
                     string& full_file_name,
@@ -390,6 +403,7 @@ find_auxiliary_file(const string& original_file_name,
     return nullptr;
   }
   ScopedFd fd;
+  string dir;
   if (aux_file_name.c_str()[0] == '/') {
     full_file_name = aux_file_name;
     fd = ScopedFd(full_file_name.c_str(), O_RDONLY);
@@ -446,11 +460,12 @@ find_auxiliary_file(const string& original_file_name,
 
     // Try in an appropriate subdirectory of the provided debug dirs
     if (dirs) {
-      for (auto& dir : *dirs) {
-        full_file_name = dir + original_file_dir + "/" + aux_file_name;
+      for (auto& d : *dirs) {
+        full_file_name = d + original_file_dir + "/" + aux_file_name;
         normalize_file_name(full_file_name);
         fd = ScopedFd(full_file_name.c_str(), O_RDONLY);
         if (fd.is_open()) {
+          dir = d;
           goto found;
         }
         LOG(info) << "Can't find external debuginfo file " << full_file_name;
@@ -479,7 +494,7 @@ find_auxiliary_file(const string& original_file_name,
 
 found:
   LOG(info) << "Examining external " << full_file_name;
-  auto reader = make_unique<ElfFileReader>(fd);
+  auto reader = make_unique<ExternalDebuginfoFileReader>(fd, dir);
   if (!reader->ok()) {
     LOG(warn) << "Not an ELF file!";
     return nullptr;
@@ -487,7 +502,7 @@ found:
   return reader;
 }
 
-static unique_ptr<ElfFileReader>
+static unique_ptr<ExternalDebuginfoFileReader>
 find_auxiliary_file_by_buildid(ElfFileReader& trace_file_reader,
                                string& full_file_name,
                                const vector<string>* dirs) {
@@ -504,13 +519,15 @@ find_auxiliary_file_by_buildid(ElfFileReader& trace_file_reader,
   string filename = build_id.substr(0, 2) + "/" + build_id.substr(2) + ".debug";
   string path = "/usr/lib/debug/.build-id/" + filename;
   ScopedFd fd(path.c_str(), O_RDONLY);
+  string dir;
   if (!fd.is_open()) {
     LOG(info) << "Can't find external debuginfo file " << path;
     if (dirs) {
-      for (auto &dir : *dirs) {
-        path = dir + "/.build-id/" + filename;
+      for (auto &d : *dirs) {
+        path = d + "/.build-id/" + filename;
         fd = ScopedFd(path.c_str(), O_RDONLY);
         if (fd.is_open()) {
+          dir = d;
           break;
         }
         LOG(info) << "Can't find external debuginfo file " << path;
@@ -523,7 +540,7 @@ find_auxiliary_file_by_buildid(ElfFileReader& trace_file_reader,
   }
 
   LOG(info) << "Examining external by buildid " << path;
-  auto reader = make_unique<ElfFileReader>(fd);
+  auto reader = make_unique<ExternalDebuginfoFileReader>(fd, dir);
   if (!reader->ok()) {
     LOG(warn) << "Not an ELF file!";
     return nullptr;
@@ -534,8 +551,8 @@ find_auxiliary_file_by_buildid(ElfFileReader& trace_file_reader,
 
 // Traverse the compilation units of an auxiliary file to collect their source files
 static bool process_auxiliary_file(ElfFileReader& trace_file_reader,
-                                   ElfFileReader& aux_file_reader,
-                                   ElfFileReader* alt_file_reader,
+                                   ExternalDebuginfoFileReader& aux_file_reader,
+                                   ExternalDebuginfoFileReader* alt_file_reader,
                                    const string& trace_relative_name,
                                    const string& original_file_name,
                                    set<string>* file_names,
@@ -555,17 +572,21 @@ static bool process_auxiliary_file(ElfFileReader& trace_file_reader,
   bool did_work;
   string original_name = original_file_name;
   base_name(original_name);
+  const string* chosen_debug_dir = !aux_file_reader.chosen_debug_dir.empty() ?
+    &aux_file_reader.chosen_debug_dir : NULL;
   auto it = comp_dir_substitutions.find(original_name);
   if (it != comp_dir_substitutions.end()) {
     LOG(debug) << "\tFound comp_dir substitution " << it->second;
     did_work = process_compilation_units(aux_file_reader, alt_file_reader,
                                          trace_relative_name, original_file_name,
-                                         it->second, file_names, dwos, dir_exists_cache);
+                                         it->second, chosen_debug_dir,
+                                         file_names, dwos, dir_exists_cache);
   } else {
     LOG(debug) << "\tNo comp_dir substitution found";
     did_work = process_compilation_units(aux_file_reader, alt_file_reader,
                                          trace_relative_name, original_file_name,
-                                         {}, file_names, dwos, dir_exists_cache);
+                                         {}, chosen_debug_dir,
+                                         file_names, dwos, dir_exists_cache);
   }
 
   if (!did_work) {
@@ -855,12 +876,14 @@ static int sources(const map<string, string>& binary_file_names,
       output_comp_dir_substitutions.push_back({ trace_relative_name, it->second });
       has_source_files = process_compilation_units(reader, altlink_reader.get(),
                                                    trace_relative_name, pair.second,
-                                                   it->second, &file_names, &dwos, dir_exists_cache);
+                                                   it->second, NULL, &file_names, &dwos,
+                                                   dir_exists_cache);
     } else {
       LOG(debug) << "\tNo comp_dir substitution found";
       has_source_files = process_compilation_units(reader, altlink_reader.get(),
                                                    trace_relative_name, pair.second,
-                                                   {}, &file_names, &dwos, dir_exists_cache);
+                                                   {}, NULL, &file_names, &dwos,
+                                                   dir_exists_cache);
     }
     /* If the original binary had source files, force the inclusion of any debugaltlink
      * file, even if it does not itself have compilation units (it may have relevant strings)

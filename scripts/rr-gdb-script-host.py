@@ -146,7 +146,21 @@ if __name__ == '__main__':
         with open(sys.argv[2], 'r') as user_script_file:
             user_script = user_script_file.read()
             host = GdbScriptHost(sys.argv[3])
-            host.execute_script(user_script)
+            try:
+                host.execute_script(user_script)
+            except NameError as e:
+                if getattr(e, "name", None) == "python" or e == "NameError: name 'python' is not defined":
+                    # This might be a gdb script that wraps a python script.
+                    start = user_script.find("python") + len("python")
+                    end = user_script.find("end")
+                    if end == -1:
+                        raise(e)
+                    user_script = user_script[start:end]
+                    try:
+                        host.execute_script(user_script)
+                    except:
+                        raise(e)
+
             for line in sys.stdin:
                 line.rstrip()
                 logging.debug("Processing %s"%line)

@@ -1169,8 +1169,12 @@ static int run_gdb_script(const map<string, string>& binary_file_names,
       char* token = strtok(buf, delimiter);
       while (token != NULL) {
         char* buf = realpath(token, NULL);
-        result.push_back(string(buf));
-        free(buf);
+        if (buf) {
+          result.push_back(string(buf));
+          free(buf);
+        } else {
+          LOG(debug) << "realpath(" << token << ") = " << strerror(errno);
+        }
         token = strtok(NULL, delimiter);
       }
       debug_dirs.insert({pair.first, result});

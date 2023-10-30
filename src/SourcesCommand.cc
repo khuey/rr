@@ -303,7 +303,9 @@ static bool process_compilation_units(ElfFileReader& reader,
       if (debug_file_directory) {
         comp_dir = *debug_file_directory;
       }
-      comp_dir += original_comp_dir;
+      if (original_comp_dir) {
+        comp_dir += original_comp_dir;
+      }
       if (!ok) {
         continue;
       }

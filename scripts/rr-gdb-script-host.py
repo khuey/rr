@@ -166,6 +166,7 @@ if __name__ == '__main__':
                     except:
                         raise(e)
 
+            print(host.debug_file_directory, file=output, flush=True)
             synchronize()
             for line in sys.stdin:
                 line.rstrip()

@@ -153,6 +153,9 @@ public:
   DebugDirManager(const string& trace_dir, const string& gdb_script);
   ~DebugDirManager();
 
+  vector<string> initial_directories() {
+    return std::move(read_result());
+  }
   vector<string> process_one_binary(const string& binary_path);
 
 private:
@@ -160,6 +163,7 @@ private:
   DebugDirManager& operator=(const DebugDirManager&) = delete;
 
   void synchronize();
+  vector<string> read_result();
 
   int pipe_fd;
   pid_t pid;
@@ -268,12 +272,8 @@ DebugDirManager::DebugDirManager(const string& trace_dir, const string& gdb_scri
 }
 
 vector<string> DebugDirManager::process_one_binary(const string& binary_path) {
-  char buf[4096];
-  const char delimiter[2] = ":";
-  vector<string> result;
-
   if (pipe_fd < 0) {
-    return result;
+    return vector<string>();
   }
 
   auto len = binary_path.length();
@@ -287,6 +287,13 @@ vector<string> DebugDirManager::process_one_binary(const string& binary_path) {
   }
 
   synchronize();
+  return std::move(read_result());
+}
+
+vector<string> DebugDirManager::read_result() {
+  char buf[4096];
+  vector<string> result;
+  const char delimiter[2] = ":";
 
   if (!fgets(buf, sizeof(buf) - 1, output_file)) {
     FATAL() << "Failed to read gdb script output";
@@ -1013,6 +1020,11 @@ static int sources(const map<string, string>& binary_file_names,
   vector<DwoInfo> dwos;
   vector<OutputCompDirSubstitution> output_comp_dir_substitutions;
   DirExistsCache dir_exists_cache;
+  vector<string> dd;
+  if (debug_dirs) {
+    dd = std::move(debug_dirs->initial_directories());
+  }
+
   for (auto& pair : binary_file_names) {
     string trace_relative_name = pair.first;
     string original_name = pair.second;
@@ -1032,11 +1044,6 @@ static int sources(const map<string, string>& binary_file_names,
     }
     base_name(original_name);
     Debugaltlink debugaltlink = reader.read_debugaltlink();
-
-    vector<string> dd;
-    if (debug_dirs) {
-      dd = std::move(debug_dirs->process_one_binary(pair.first));
-    }
 
     string full_altfile_name;
     auto altlink_reader = find_auxiliary_file(pair.second, debugaltlink.file_name,
@@ -1099,6 +1106,10 @@ static int sources(const map<string, string>& binary_file_names,
       relevant_binary_names.push_back(std::move(trace_relative_name));
     } else {
       LOG(info) << "No debuginfo found";
+    }
+
+    if (debug_dirs) {
+      dd = std::move(debug_dirs->process_one_binary(pair.first));
     }
   }
 

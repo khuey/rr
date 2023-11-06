@@ -2,6 +2,8 @@
 """ rr-gdb-script-host.py <output> <user-gdb-script> <primary binary name>"""
 from typing import Optional, List, Callable
 import logging
+import os
+import signal
 import sys
 
 def strip_prefix(s: str, needle: str) -> Optional[str]:
@@ -141,6 +143,9 @@ class GdbApiRoot(GdbApiObject):
             self._events = GdbApiEvents(self.gdb)
         return self._events
 
+def synchronize():
+    os.kill(os.getpid(), signal.SIGSTOP)
+
 if __name__ == '__main__':
     with open(sys.argv[1], 'w') as output:
         with open(sys.argv[2], 'r') as user_script_file:
@@ -161,8 +166,10 @@ if __name__ == '__main__':
                     except:
                         raise(e)
 
+            synchronize()
             for line in sys.stdin:
                 line.rstrip()
                 logging.debug("Processing %s"%line)
                 host.new_objfile(line)
-                print(host.debug_file_directory, file=output)
+                print(host.debug_file_directory, file=output, flush=True)
+                synchronize()

@@ -148,6 +148,179 @@ struct DirExistsCache {
   }
 };
 
+class DebugDirManager {
+public:
+  DebugDirManager(const string& trace_dir, const string& gdb_script);
+  ~DebugDirManager();
+
+  vector<string> process_one_binary(const string& binary_path);
+
+private:
+  DebugDirManager(const DebugDirManager&) = delete;
+  DebugDirManager& operator=(const DebugDirManager&) = delete;
+
+  void synchronize();
+
+  int pipe_fd;
+  pid_t pid;
+  FILE* output_file;
+};
+
+DebugDirManager::~DebugDirManager() {
+  if (pipe_fd < 0) {
+    return;
+  }
+
+  close(pipe_fd);
+
+  int status;
+  if (waitpid(pid, &status, 0) == -1) {
+    FATAL() << "Failed to wait on gdb script host";
+  }
+
+  if (!(WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
+    FATAL() << "gdb script host in unexpected state " << HEX(status);
+  }
+}
+
+DebugDirManager::DebugDirManager(const string& trace_dir, const string& gdb_script)
+  : pipe_fd(-1), pid(-1), output_file(NULL)
+{
+  if (gdb_script.empty()) {
+    return;
+  }
+
+  string program;
+  {
+    ReplaySession::Flags flags;
+    flags.redirect_stdio = false;
+    flags.share_private_mappings = false;
+    flags.replay_stops_at_first_execve = true;
+    flags.cpu_unbound = true;
+
+    ReplaySession::shr_ptr replay_session = ReplaySession::create(trace_dir, flags);
+    while (true) {
+      auto result = replay_session->replay_step(RUN_CONTINUE);
+      if (replay_session->done_initial_exec()) {
+        program = replay_session->vms()[0]->exe_image();
+        break;
+      }
+
+      if (result.status == REPLAY_EXITED) {
+        break;
+      }
+    }
+  }
+
+  TempFile output_file = create_temporary_file("rr-gdb-script-host-output-XXXXXX");
+
+  int stdin_pipe_fds[2];
+  if (pipe(stdin_pipe_fds) == -1) {
+    FATAL();
+  }
+
+  posix_spawn_file_actions_t file_actions;
+  int ret = posix_spawn_file_actions_init(&file_actions);
+  if (ret != 0) {
+    FATAL() << "posix_spawn_file_actions_init failed with " << ret;
+  }
+
+  // Close unused write end in the child.
+  ret = posix_spawn_file_actions_addclose(&file_actions, stdin_pipe_fds[1]);
+  if (ret != 0) {
+    FATAL() << "posix_spawn_file_actions_addclose failed with " << ret;
+  }
+
+  // Replace child's stdin with the read end.
+  ret = posix_spawn_file_actions_adddup2(&file_actions, stdin_pipe_fds[0], 0);
+  if (ret != 0) {
+    FATAL() << "posix_spawn_file_actions_adddup2 failed with " << ret;
+  }
+
+  string gdb_script_host_path = resource_path() + "bin/rr-gdb-script-host.py";
+  pid_t pid;
+  char* gdb_script_host_argv[] = {
+    strdup(gdb_script_host_path.c_str()),
+    strdup(output_file.name.c_str()),
+    strdup(gdb_script.c_str()),
+    strdup(program.c_str()),
+    NULL,
+  };
+  ret = posix_spawn(&pid, gdb_script_host_path.c_str(), &file_actions, NULL,
+                    gdb_script_host_argv, environ);
+  if (ret != 0) {
+    FATAL() << "posix_spawn failed with " << ret;
+  }
+
+  // Ignore the return values during cleanup.
+  posix_spawn_file_actions_destroy(&file_actions);
+
+  close(stdin_pipe_fds[0]);
+
+  this->pid = pid;
+  this->pipe_fd = stdin_pipe_fds[1];
+  this->output_file = fopen(output_file.name.c_str(), "r");
+  if (!this->output_file) {
+    FATAL() << "Failed to open gdb script host result file " << output_file.name;
+  }
+
+  synchronize();
+}
+
+vector<string> DebugDirManager::process_one_binary(const string& binary_path) {
+  char buf[4096];
+  const char delimiter[2] = ":";
+  vector<string> result;
+
+  if (pipe_fd < 0) {
+    return result;
+  }
+
+  auto len = binary_path.length();
+  size_t written = write(pipe_fd, binary_path.c_str(), len);
+  if (written != len) {
+    FATAL() << "Failed to write filename";
+  }
+  written = write(pipe_fd, "\n", 1);
+  if (written != 1) {
+    FATAL() << "Failed to write trailing newline";
+  }
+
+  synchronize();
+
+  if (!fgets(buf, sizeof(buf) - 1, output_file)) {
+    FATAL() << "Failed to read gdb script output";
+  }
+  buf[strcspn(buf, "\n")] = 0;
+
+  char* token = strtok(buf, delimiter);
+  while (token != NULL) {
+    char* buf = realpath(token, NULL);
+    if (buf) {
+      result.push_back(string(buf));
+      free(buf);
+    } else {
+      LOG(debug) << "realpath(" << token << ") = " << strerror(errno);
+    }
+    token = strtok(NULL, delimiter);
+  }
+
+  return result;
+}
+ 
+void DebugDirManager::synchronize() {
+  int status;
+  if (waitpid(pid, &status, WUNTRACED) == -1) {
+    FATAL() << "Failed to wait on gdb script host";
+  }
+
+  if (!(WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP)) {
+    FATAL() << "gdb script host in unexpected state " << HEX(status);
+  }
+
+  kill(pid, SIGCONT);
+}
+
 // Resolve a file name relative to a compilation directory and relative directory.
 // file_name cannot be null, but the others can be.
 // Takes into account the original file name as follows:
@@ -400,7 +573,7 @@ static unique_ptr<ExternalDebuginfoFileReader>
 find_auxiliary_file(const string& original_file_name,
                     const string& aux_file_name,
                     string& full_file_name,
-                    const vector<string>* dirs) {
+                    const vector<string>& dirs) {
   if (aux_file_name.empty()) {
     return nullptr;
   }
@@ -461,17 +634,15 @@ find_auxiliary_file(const string& original_file_name,
     LOG(info) << "Can't find external debuginfo file " << full_file_name;
 
     // Try in an appropriate subdirectory of the provided debug dirs
-    if (dirs) {
-      for (auto& d : *dirs) {
-        full_file_name = d + original_file_dir + "/" + aux_file_name;
-        normalize_file_name(full_file_name);
-        fd = ScopedFd(full_file_name.c_str(), O_RDONLY);
-        if (fd.is_open()) {
-          dir = d;
-          goto found;
-        }
-        LOG(info) << "Can't find external debuginfo file " << full_file_name;
+    for (auto& d : dirs) {
+      full_file_name = d + original_file_dir + "/" + aux_file_name;
+      normalize_file_name(full_file_name);
+      fd = ScopedFd(full_file_name.c_str(), O_RDONLY);
+      if (fd.is_open()) {
+        dir = d;
+        goto found;
       }
+      LOG(info) << "Can't find external debuginfo file " << full_file_name;
     }
 
     // On Ubuntu 20.04 there's both a /lib/x86_64-linux-gnu/libc-2.31.so and a
@@ -507,7 +678,7 @@ found:
 static unique_ptr<ExternalDebuginfoFileReader>
 find_auxiliary_file_by_buildid(ElfFileReader& trace_file_reader,
                                string& full_file_name,
-                               const vector<string>* dirs) {
+                               const vector<string>& dirs) {
   string build_id = trace_file_reader.read_buildid();
   if (build_id.empty()) {
     LOG(warn) << "Main ELF binary has no build ID!";
@@ -524,16 +695,14 @@ find_auxiliary_file_by_buildid(ElfFileReader& trace_file_reader,
   string dir;
   if (!fd.is_open()) {
     LOG(info) << "Can't find external debuginfo file " << path;
-    if (dirs) {
-      for (auto &d : *dirs) {
-        path = d + "/.build-id/" + filename;
-        fd = ScopedFd(path.c_str(), O_RDONLY);
-        if (fd.is_open()) {
-          dir = d;
-          break;
-        }
-        LOG(info) << "Can't find external debuginfo file " << path;
+    for (auto &d : dirs) {
+      path = d + "/.build-id/" + filename;
+      fd = ScopedFd(path.c_str(), O_RDONLY);
+      if (fd.is_open()) {
+        dir = d;
+        break;
       }
+      LOG(info) << "Can't find external debuginfo file " << path;
     }
   }
 
@@ -609,7 +778,7 @@ static bool try_debuglink_file(ElfFileReader& trace_file_reader,
                                const string& original_file_name,
                                set<string>* file_names, const string& aux_file_name,
                                const map<string, string>& comp_dir_substitutions,
-                               const vector<string>* debug_dirs,
+                               const vector<string>& debug_dirs,
                                vector<DwoInfo>* dwos,
                                set<ExternalDebugInfo>* external_debug_info,
                                DirExistsCache& dir_exists_cache) {
@@ -830,7 +999,7 @@ struct OutputCompDirSubstitution {
 
 static int sources(const map<string, string>& binary_file_names,
                    const map<string, string>& comp_dir_substitutions,
-                   const map<string, vector<string>>& debug_dirs,
+                   unique_ptr<DebugDirManager>& debug_dirs,
                    bool is_explicit) {
   vector<string> relevant_binary_names;
   // Must be absolute.
@@ -859,10 +1028,9 @@ static int sources(const map<string, string>& binary_file_names,
     base_name(original_name);
     Debugaltlink debugaltlink = reader.read_debugaltlink();
 
-    const vector<string>* dd = NULL;
-    auto debug_dirs_lookup = debug_dirs.find(pair.first);
-    if (debug_dirs_lookup != debug_dirs.end()) {
-      dd = &debug_dirs_lookup->second;
+    vector<string> dd;
+    if (debug_dirs) {
+      dd = std::move(debug_dirs->process_one_binary(pair.first));
     }
 
     string full_altfile_name;
@@ -1079,139 +1247,6 @@ static bool parse_sources_option(vector<string>& args, SourcesFlags& flags) {
   return true;
 }
 
-static int run_gdb_script(const map<string, string>& binary_file_names,
-                          const string& trace_dir,
-                          const string& gdb_script,
-                          map<string, vector<string>>& debug_dirs) {
-  if (gdb_script.empty()) {
-    return 0;
-  }
-
-  string program;
-  {
-    ReplaySession::Flags flags;
-    flags.redirect_stdio = false;
-    flags.share_private_mappings = false;
-    flags.replay_stops_at_first_execve = true;
-    flags.cpu_unbound = true;
-
-    ReplaySession::shr_ptr replay_session = ReplaySession::create(trace_dir, flags);
-    while (true) {
-      auto result = replay_session->replay_step(RUN_CONTINUE);
-      if (replay_session->done_initial_exec()) {
-        program = replay_session->vms()[0]->exe_image();
-        break;
-      }
-
-      if (result.status == REPLAY_EXITED) {
-        break;
-      }
-    }
-  }
-
-  TempFile output_file = create_temporary_file("rr-gdb-script-host-output-XXXXXX");
-
-  int stdin_pipe_fds[2];
-  if (pipe(stdin_pipe_fds) == -1) {
-    return -1;
-  }
-
-  posix_spawn_file_actions_t file_actions;
-  int ret = posix_spawn_file_actions_init(&file_actions);
-  if (ret != 0) {
-    return ret;
-  }
-
-  // Close unused write end in the child.
-  ret = posix_spawn_file_actions_addclose(&file_actions, stdin_pipe_fds[1]);
-  if (ret != 0) {
-    return ret;
-  }
-
-  // Replace child's stdin with the read end.
-  ret = posix_spawn_file_actions_adddup2(&file_actions, stdin_pipe_fds[0], 0);
-  if (ret != 0) {
-    return ret;
-  }
-
-  string gdb_script_host_path = resource_path() + "bin/rr-gdb-script-host.py";
-  pid_t pid;
-  char* gdb_script_host_argv[] = {
-    strdup(gdb_script_host_path.c_str()),
-    strdup(output_file.name.c_str()),
-    strdup(gdb_script.c_str()),
-    strdup(program.c_str()),
-    NULL,
-  };
-  ret = posix_spawn(&pid, gdb_script_host_path.c_str(), &file_actions, NULL,
-                    gdb_script_host_argv, environ);
-  if (ret != 0) {
-    return ret;
-  }
-
-  close(stdin_pipe_fds[0]);
-
-  for (auto& pair : binary_file_names) {
-    const string& filename = pair.first;
-    auto len = filename.length();
-    size_t written = write(stdin_pipe_fds[1], filename.c_str(), len);
-    if (written != len) {
-      FATAL() << "Failed to write filename";
-    }
-    written = write(stdin_pipe_fds[1], "\n", 1);
-    if (written != 1) {
-      FATAL() << "Failed to write trailing newline";
-    }
-  }
-
-  close(stdin_pipe_fds[1]);
-
-  int status;
-  if (waitpid(pid, &status, 0) == -1) {
-    FATAL() << "Failed to wait on gdb script host";
-    return 1;
-  }
-
-  if (!(WIFEXITED(status) && WEXITSTATUS(status) == 0)) {
-    FATAL() << "gdb script host in unexpected state " << HEX(status);
-    return 1;
-  }
-
-  // Ignore the return values during cleanup.
-  posix_spawn_file_actions_destroy(&file_actions);
-
-  // Read the results file.
-  if (FILE* f = fopen(output_file.name.c_str(), "r")) {
-    char buf[4096];
-    const char delimiter[2] = ":";
-    for (auto& pair : binary_file_names) {
-      if (!fgets(buf, sizeof(buf) - 1, f)) {
-        FATAL() << "Failed to read " << output_file.name;
-      }
-      buf[strcspn(buf, "\n")] = 0;
-
-      vector<string> result;
-      char* token = strtok(buf, delimiter);
-      while (token != NULL) {
-        char* buf = realpath(token, NULL);
-        if (buf) {
-          result.push_back(string(buf));
-          free(buf);
-        } else {
-          LOG(debug) << "realpath(" << token << ") = " << strerror(errno);
-        }
-        token = strtok(NULL, delimiter);
-      }
-      debug_dirs.insert({pair.first, result});
-    }
-  } else {
-    FATAL() << "Failed to open gdb script host result file " << output_file.name;
-    return 1;
-  }
-
-  return 0;
-}
-
 int SourcesCommand::run(vector<string>& args) {
   // Various "cannot replay safely..." warnings cannot affect us since
   // we only replay to the first execve.
@@ -1249,9 +1284,8 @@ int SourcesCommand::run(vector<string>& args) {
     }
   }
 
-  map<string, vector<string>> debug_dirs;
-  return run_gdb_script(binary_file_names, trace_dir, flags.gdb_script, debug_dirs) ||
-    sources(binary_file_names, flags.comp_dir_substitutions, debug_dirs, false);
+  auto debug_dirs = make_unique<DebugDirManager>(trace_dir, flags.gdb_script);
+  return sources(binary_file_names, flags.comp_dir_substitutions, debug_dirs, false);
 }
 
 int ExplicitSourcesCommand::run(vector<string>& args) {
@@ -1290,7 +1324,7 @@ int ExplicitSourcesCommand::run(vector<string>& args) {
     binary_file_names.insert(make_pair(std::move(buildid), arg));
   }
 
-  map<string, vector<string>> debug_dirs;
+  unique_ptr<DebugDirManager> debug_dirs;
   return sources(binary_file_names, flags.comp_dir_substitutions, debug_dirs, true);
 }
 

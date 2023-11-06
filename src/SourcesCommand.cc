@@ -778,25 +778,30 @@ static bool try_debuglink_file(ElfFileReader& trace_file_reader,
                                const string& original_file_name,
                                set<string>* file_names, const string& aux_file_name,
                                const map<string, string>& comp_dir_substitutions,
-                               const vector<string>& debug_dirs,
+                               unique_ptr<DebugDirManager>& debug_dirs,
+                               vector<string>& dd,
                                vector<DwoInfo>* dwos,
                                set<ExternalDebugInfo>* external_debug_info,
                                DirExistsCache& dir_exists_cache) {
   string full_file_name;
   auto reader = find_auxiliary_file(original_file_name, aux_file_name,
-                                    full_file_name, debug_dirs);
+                                    full_file_name, dd);
   if (!reader) {
-    reader = find_auxiliary_file_by_buildid(trace_file_reader, full_file_name, debug_dirs);
+    reader = find_auxiliary_file_by_buildid(trace_file_reader, full_file_name, dd);
     if (!reader) {
       return false;
     }
+  }
+
+  if (debug_dirs) {
+    dd = debug_dirs->process_one_binary(full_file_name);
   }
 
   /* A debuglink file can have its own debugaltlink */
   string full_altfile_name;
   Debugaltlink debugaltlink = reader->read_debugaltlink();
   auto altlink_reader = find_auxiliary_file(original_file_name, debugaltlink.file_name,
-                                            full_altfile_name, debug_dirs);
+                                            full_altfile_name, dd);
 
   bool has_source_files = process_auxiliary_file(trace_file_reader, *reader, altlink_reader.get(),
                                                  trace_relative_name, original_file_name,
@@ -1063,7 +1068,7 @@ static int sources(const map<string, string>& binary_file_names,
     Debuglink debuglink = reader.read_debuglink();
     has_source_files |= try_debuglink_file(reader, trace_relative_name, pair.second,
                                            &file_names, debuglink.file_name,
-                                           comp_dir_substitutions, dd, &dwos,
+                                           comp_dir_substitutions, debug_dirs, dd, &dwos,
                                            &external_debug_info, dir_exists_cache);
 
     if (altlink_reader) {

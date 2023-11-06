@@ -154,7 +154,7 @@ public:
   ~DebugDirManager();
 
   vector<string> initial_directories() {
-    return std::move(read_result());
+    return read_result();
   }
   vector<string> process_one_binary(const string& binary_path);
 
@@ -287,7 +287,7 @@ vector<string> DebugDirManager::process_one_binary(const string& binary_path) {
   }
 
   synchronize();
-  return std::move(read_result());
+  return read_result();
 }
 
 vector<string> DebugDirManager::read_result() {
@@ -1022,7 +1022,7 @@ static int sources(const map<string, string>& binary_file_names,
   DirExistsCache dir_exists_cache;
   vector<string> dd;
   if (debug_dirs) {
-    dd = std::move(debug_dirs->initial_directories());
+    dd = debug_dirs->initial_directories();
   }
 
   for (auto& pair : binary_file_names) {
@@ -1109,7 +1109,7 @@ static int sources(const map<string, string>& binary_file_names,
     }
 
     if (debug_dirs) {
-      dd = std::move(debug_dirs->process_one_binary(pair.first));
+      dd = debug_dirs->process_one_binary(pair.first);
     }
   }
 

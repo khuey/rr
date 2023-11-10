@@ -804,7 +804,7 @@ static bool try_debuglink_file(ElfFileReader& trace_file_reader,
   const string* chosen_debug_dir = NULL;
   if (!dd.empty()) {
     // XXXkhuey what do we do if there's more than one directory?
-    chosen_debug_dir = &dd.front();
+    chosen_debug_dir = &dd.back();
   }
 
   bool has_source_files = process_auxiliary_file(trace_file_reader, *reader, altlink_reader.get(),

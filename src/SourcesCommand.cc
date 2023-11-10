@@ -798,7 +798,7 @@ static bool try_debuglink_file(ElfFileReader& trace_file_reader,
 
   // Notify a gdb script about the main binary before processing CUs.
   if (debug_dirs) {
-    dd = debug_dirs->process_one_binary(trace_relative_name);
+    dd = debug_dirs->process_one_binary(original_file_name);
   }
 
   const string* chosen_debug_dir = NULL;

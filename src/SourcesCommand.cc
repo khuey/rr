@@ -304,7 +304,9 @@ vector<string> DebugDirManager::read_result() {
   while (token != NULL) {
     char* buf = realpath(token, NULL);
     if (buf) {
-      result.push_back(string(buf));
+      auto s = string(buf);
+      result.push_back(s);
+      LOG(debug) << "gdb script added debug dir '" << s << "'";
       free(buf);
     } else {
       LOG(debug) << "realpath(" << token << ") = " << strerror(errno);

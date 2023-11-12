@@ -470,14 +470,14 @@ static bool process_compilation_units(ElfFileReader& reader,
     if (!comp_dir_substitution.empty()) {
       comp_dir = comp_dir_substitution;
     } else {
-      if (debug_file_directory) {
-        comp_dir = *debug_file_directory;
-      }
-      if (original_comp_dir) {
-        comp_dir += original_comp_dir;
-      }
       if (!ok) {
         continue;
+      }
+      if (original_comp_dir) {
+        comp_dir = original_comp_dir;
+      }
+      if (debug_file_directory) {
+        prepend_path(debug_file_directory->c_str(), comp_dir);
       }
     }
     const char* dwo_name = cu.die().string_attr(cu, DW_AT_GNU_dwo_name, debug_strs, &ok);

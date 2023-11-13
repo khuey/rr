@@ -983,7 +983,8 @@ struct OutputCompDirSubstitution {
   string substitution;
 };
 
-static int sources(const map<string, string>& binary_file_names,
+template<class iterable>
+static int sources(const iterable& binary_file_names,
                    const map<string, string>& comp_dir_substitutions,
                    unique_ptr<DebugDirManager>& debug_dirs,
                    bool is_explicit) {
@@ -1296,8 +1297,15 @@ int SourcesCommand::run(vector<string>& args) {
     }
   }
 
+  std::vector<std::pair<string, string>> binary_file_names_ordered;
+  auto i = binary_file_names.find(program);
+  if (i != binary_file_names.end()) {
+    binary_file_names_ordered.push_back(*i);
+    binary_file_names.erase(program);
+  }
+  std::copy(binary_file_names.begin(), binary_file_names.end(), std::back_inserter(binary_file_names_ordered));
   auto debug_dirs = make_unique<DebugDirManager>(program, flags.gdb_script);
-  return sources(binary_file_names, flags.comp_dir_substitutions, debug_dirs, false);
+  return sources(binary_file_names_ordered, flags.comp_dir_substitutions, debug_dirs, false);
 }
 
 int ExplicitSourcesCommand::run(vector<string>& args) {

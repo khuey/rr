@@ -14,7 +14,6 @@
 #include "Command.h"
 #include "ElfReader.h"
 #include "Flags.h"
-#include "RecordSession.h"
 #include "ReplaySession.h"
 #include "TraceStream.h"
 #include "core.h"
@@ -150,7 +149,7 @@ struct DirExistsCache {
 
 class DebugDirManager {
 public:
-  DebugDirManager(const string& trace_dir, const string& gdb_script);
+  DebugDirManager(const string& program, const string& gdb_script);
   ~DebugDirManager();
 
   vector<string> initial_directories() {
@@ -187,33 +186,11 @@ DebugDirManager::~DebugDirManager() {
   }
 }
 
-DebugDirManager::DebugDirManager(const string& trace_dir, const string& gdb_script)
+DebugDirManager::DebugDirManager(const string& program, const string& gdb_script)
   : pipe_fd(-1), pid(-1), output_file(NULL)
 {
   if (gdb_script.empty()) {
     return;
-  }
-
-  string program;
-  {
-    ReplaySession::Flags flags;
-    flags.redirect_stdio = false;
-    flags.share_private_mappings = false;
-    flags.replay_stops_at_first_execve = true;
-    flags.cpu_unbound = true;
-
-    ReplaySession::shr_ptr replay_session = ReplaySession::create(trace_dir, flags);
-    while (true) {
-      auto result = replay_session->replay_step(RUN_CONTINUE);
-      if (replay_session->done_initial_exec()) {
-        program = replay_session->vms()[0]->exe_image();
-        break;
-      }
-
-      if (result.status == REPLAY_EXITED) {
-        break;
-      }
-    }
   }
 
   TempFile output_file = create_temporary_file("rr-gdb-script-host-output-XXXXXX");
@@ -1297,7 +1274,29 @@ int SourcesCommand::run(vector<string>& args) {
     }
   }
 
-  auto debug_dirs = make_unique<DebugDirManager>(trace_dir, flags.gdb_script);
+  string program;
+  {
+    ReplaySession::Flags flags;
+    flags.redirect_stdio = false;
+    flags.share_private_mappings = false;
+    flags.replay_stops_at_first_execve = true;
+    flags.cpu_unbound = true;
+
+    ReplaySession::shr_ptr replay_session = ReplaySession::create(trace_dir, flags);
+    while (true) {
+      auto result = replay_session->replay_step(RUN_CONTINUE);
+      if (replay_session->done_initial_exec()) {
+        program = replay_session->vms()[0]->exe_image();
+        break;
+      }
+
+      if (result.status == REPLAY_EXITED) {
+        break;
+      }
+    }
+  }
+
+  auto debug_dirs = make_unique<DebugDirManager>(program, flags.gdb_script);
   return sources(binary_file_names, flags.comp_dir_substitutions, debug_dirs, false);
 }
 

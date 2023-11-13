@@ -169,7 +169,7 @@ if __name__ == '__main__':
             print(host.debug_file_directory, file=output, flush=True)
             synchronize()
             for line in sys.stdin:
-                line.rstrip()
+                line = line.rstrip()
                 logging.debug("Processing %s"%line)
                 host.new_objfile(line)
                 print(host.debug_file_directory, file=output, flush=True)

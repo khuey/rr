@@ -272,6 +272,10 @@ vector<string> DebugDirManager::read_result() {
   vector<string> result;
   const char delimiter[2] = ":";
 
+  if (pipe_fd < 0) {
+    return result;
+  }
+
   if (!fgets(buf, sizeof(buf) - 1, output_file)) {
     FATAL() << "Failed to read gdb script output";
   }

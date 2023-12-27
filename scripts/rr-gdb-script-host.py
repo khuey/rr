@@ -122,6 +122,11 @@ class GdbApiRoot(GdbApiObject):
             else:
                 print(r, file=sys.stderr)
                 return None
+        remainder = strip_prefix(command, "dir ")
+        if remainder:
+            self.gdb._dir = remainder
+            return None
+
         logging.warning("Unsupported gdb.execute \"%s\""%command)
         return None
 
@@ -167,10 +172,12 @@ if __name__ == '__main__':
                         raise(e)
 
             print(host.debug_file_directory, file=output, flush=True)
+            print(host._dir, file=output, flush=True)
             synchronize()
             for line in sys.stdin:
                 line = line.rstrip()
                 logging.debug("Processing %s"%line)
                 host.new_objfile(line)
                 print(host.debug_file_directory, file=output, flush=True)
+                print(host._dir, file=output, flush=True)
                 synchronize()

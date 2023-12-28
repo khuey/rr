@@ -31,6 +31,8 @@ class GdbScriptHost:
         cmd.rstrip()
         if cmd == "debug-file-directory":
             return self.debug_file_directory
+        if cmd == "dir":
+            return "Source directories searched: %s:$cdir:$cwd"%self._dir
 
         return None
 
@@ -125,7 +127,12 @@ class GdbApiRoot(GdbApiObject):
         remainder = strip_prefix(command, "dir ")
         if remainder:
             self.gdb._dir = remainder
-            return None
+            s = "Source directories searched: %s:$cdir:$cwd"%remainder
+            if to_string:
+                return s
+            else:
+                print(s, file=sys.stderr)
+                return None
 
         logging.warning("Unsupported gdb.execute \"%s\""%command)
         return None

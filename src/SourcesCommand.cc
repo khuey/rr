@@ -302,11 +302,13 @@ DebugDirs DebugDirManager::read_result() {
     token = strtok(NULL, delimiter);
   }
 
-  char* buf2 = &buf[index + 1];
-  index = strcspn(buf2, "\n");
-  buf2[index] = 0;
+  if (!fgets(buf, sizeof(buf) - 1, output_file)) {
+    FATAL() << "Failed to read gdb script output";
+  }
+  index = strcspn(buf, "\n");
+  buf[index] = 0;
 
-  token = strtok(buf2, delimiter);
+  token = strtok(buf, delimiter);
   while (token != NULL) {
     char* buf = realpath(token, NULL);
     if (buf) {

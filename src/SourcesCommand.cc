@@ -4,6 +4,7 @@
 #include <spawn.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <set>
 #include <tuple>
 #include <unordered_map>
@@ -416,12 +417,17 @@ struct DwoInfo {
   uint64_t id;
 };
 
+struct OutputCompDirSubstitution {
+  string trace_relative_name;
+  string substitution;
+};
+
 static bool process_compilation_units(ElfFileReader& reader,
                                       ElfFileReader* sup_reader,
                                       const string& trace_relative_name,
                                       const string& original_file_name,
                                       const string& comp_dir_substitution,
-                                      map<string, string>& comp_dir_substitutions,
+                                      vector<OutputCompDirSubstitution>& comp_dir_substitutions,
                                       const string* debug_file_directory,
                                       const string* debug_src_directory,
                                       set<string>* file_names, vector<DwoInfo>* dwos,
@@ -487,11 +493,11 @@ static bool process_compilation_units(ElfFileReader& reader,
         comp_dir = original_comp_dir;
       }
       if (debug_src_directory && !is_absolute(comp_dir)) {
-        string binary_comp_dir = comp_dir;
         prepend_path(debug_src_directory->c_str(), comp_dir);
-        if (debug_file_directory) {
-          prepend_path(debug_file_directory->c_str(), binary_comp_dir);
-          comp_dir_substitutions.insert({ binary_comp_dir, comp_dir });
+        if (std::find_if(comp_dir_substitutions.begin(), comp_dir_substitutions.end(), [trace_relative_name](OutputCompDirSubstitution& s) {
+          return s.trace_relative_name == trace_relative_name;
+        }) == comp_dir_substitutions.end()) {
+          comp_dir_substitutions.push_back({ trace_relative_name, comp_dir });
         }
       } else if (debug_file_directory) {
         prepend_path(debug_file_directory->c_str(), comp_dir);
@@ -739,7 +745,8 @@ static bool process_auxiliary_file(ElfFileReader& trace_file_reader,
                                    set<string>* file_names,
                                    const string& full_aux_file_name,
                                    const char* file_type,
-                                   map<string, string>& comp_dir_substitutions,
+                                   map<string, string> comp_dir_substitutions,
+                                   vector<OutputCompDirSubstitution>& output_comp_dir_substitutions,
                                    const string* chosen_debug_dir,
                                    const string* chosen_src_dir,
                                    vector<DwoInfo>* dwos,
@@ -760,14 +767,14 @@ static bool process_auxiliary_file(ElfFileReader& trace_file_reader,
     LOG(debug) << "\tFound comp_dir substitution " << it->second;
     did_work = process_compilation_units(aux_file_reader, alt_file_reader,
                                          trace_relative_name, original_file_name,
-                                         it->second, comp_dir_substitutions,
+                                         it->second, output_comp_dir_substitutions,
                                          chosen_debug_dir, chosen_src_dir,
                                          file_names, dwos, dir_exists_cache);
   } else {
     LOG(debug) << "\tNo comp_dir substitution found";
     did_work = process_compilation_units(aux_file_reader, alt_file_reader,
                                          trace_relative_name, original_file_name,
-                                         {}, comp_dir_substitutions,
+                                         {}, output_comp_dir_substitutions,
                                          chosen_debug_dir, chosen_src_dir,
                                          file_names, dwos, dir_exists_cache);
   }
@@ -790,6 +797,7 @@ static bool try_debuglink_file(ElfFileReader& trace_file_reader,
                                const string& original_file_name,
                                set<string>* file_names, const string& aux_file_name,
                                map<string, string>& comp_dir_substitutions,
+                               vector<OutputCompDirSubstitution>& output_comp_dir_substitutions,
                                unique_ptr<DebugDirManager>& debug_dirs,
                                DebugDirs& dd,
                                vector<DwoInfo>* dwos,
@@ -835,14 +843,16 @@ static bool try_debuglink_file(ElfFileReader& trace_file_reader,
   bool has_source_files = process_auxiliary_file(trace_file_reader, *reader, altlink_reader.get(),
                                                  trace_relative_name, original_file_name,
                                                  file_names, full_file_name, DEBUGLINK,
-                                                 comp_dir_substitutions, chosen_debug_dir, chosen_src_dir,
+                                                 comp_dir_substitutions, output_comp_dir_substitutions,
+                                                 chosen_debug_dir, chosen_src_dir,
                                                  dwos, external_debug_info, false, dir_exists_cache);
 
   if (altlink_reader) {
     has_source_files |= process_auxiliary_file(trace_file_reader, *altlink_reader, nullptr,
                                                trace_relative_name, original_file_name,
                                                file_names, full_altfile_name, DEBUGALTLINK,
-                                               comp_dir_substitutions, chosen_debug_dir, chosen_src_dir,
+                                               comp_dir_substitutions, output_comp_dir_substitutions,
+                                               chosen_debug_dir, chosen_src_dir,
                                                dwos, external_debug_info, has_source_files, dir_exists_cache);
   }
   return has_source_files;
@@ -1026,11 +1036,6 @@ static bool starts_with(const string& s, const string& prefix) {
   return strncmp(s.c_str(), prefix.c_str(), prefix.size()) == 0;
 }
 
-struct OutputCompDirSubstitution {
-  string trace_relative_name;
-  string substitution;
-};
-
 template<class iterable>
 static int sources(const iterable& binary_file_names,
                    map<string, string>& comp_dir_substitutions,
@@ -1081,14 +1086,14 @@ static int sources(const iterable& binary_file_names,
       output_comp_dir_substitutions.push_back({ trace_relative_name, it->second });
       has_source_files = process_compilation_units(reader, altlink_reader.get(),
                                                    trace_relative_name, pair.second,
-                                                   it->second, comp_dir_substitutions,
+                                                   it->second, output_comp_dir_substitutions,
                                                    NULL, NULL, &file_names, &dwos,
                                                    dir_exists_cache);
     } else {
       LOG(debug) << "\tNo comp_dir substitution found";
       has_source_files = process_compilation_units(reader, altlink_reader.get(),
                                                    trace_relative_name, pair.second,
-                                                   {}, comp_dir_substitutions,
+                                                   {}, output_comp_dir_substitutions,
                                                    NULL, NULL, &file_names, &dwos,
                                                    dir_exists_cache);
     }
@@ -1100,7 +1105,7 @@ static int sources(const iterable& binary_file_names,
     Debuglink debuglink = reader.read_debuglink();
     has_source_files |= try_debuglink_file(reader, trace_relative_name, pair.second,
                                            &file_names, debuglink.file_name,
-                                           comp_dir_substitutions, debug_dirs, dd, &dwos,
+                                           comp_dir_substitutions, output_comp_dir_substitutions, debug_dirs, dd, &dwos,
                                            &external_debug_info, dir_exists_cache);
 
     if (dd.debug_file_directories.empty() && debug_dirs) {
@@ -1111,7 +1116,7 @@ static int sources(const iterable& binary_file_names,
       has_source_files |= process_auxiliary_file(reader, *altlink_reader, nullptr,
                                                  trace_relative_name, pair.second,
                                                  &file_names, full_altfile_name,
-                                                 DEBUGALTLINK, comp_dir_substitutions, NULL, NULL,
+                                                 DEBUGALTLINK, comp_dir_substitutions, output_comp_dir_substitutions, NULL, NULL,
                                                  &dwos, &external_debug_info,
                                                  original_had_source_files, dir_exists_cache);
     }

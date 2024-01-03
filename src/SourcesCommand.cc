@@ -421,6 +421,7 @@ static bool process_compilation_units(ElfFileReader& reader,
                                       const string& trace_relative_name,
                                       const string& original_file_name,
                                       const string& comp_dir_substitution,
+                                      map<string, string>& comp_dir_substitutions,
                                       const string* debug_file_directory,
                                       const string* debug_src_directory,
                                       set<string>* file_names, vector<DwoInfo>* dwos,
@@ -486,7 +487,12 @@ static bool process_compilation_units(ElfFileReader& reader,
         comp_dir = original_comp_dir;
       }
       if (debug_src_directory && !is_absolute(comp_dir)) {
+        string binary_comp_dir = comp_dir;
         prepend_path(debug_src_directory->c_str(), comp_dir);
+        if (debug_file_directory) {
+          prepend_path(debug_file_directory->c_str(), binary_comp_dir);
+          comp_dir_substitutions.insert({ binary_comp_dir, comp_dir });
+        }
       } else if (debug_file_directory) {
         prepend_path(debug_file_directory->c_str(), comp_dir);
       }
@@ -733,7 +739,7 @@ static bool process_auxiliary_file(ElfFileReader& trace_file_reader,
                                    set<string>* file_names,
                                    const string& full_aux_file_name,
                                    const char* file_type,
-                                   const map<string, string>& comp_dir_substitutions,
+                                   map<string, string>& comp_dir_substitutions,
                                    const string* chosen_debug_dir,
                                    const string* chosen_src_dir,
                                    vector<DwoInfo>* dwos,
@@ -754,13 +760,15 @@ static bool process_auxiliary_file(ElfFileReader& trace_file_reader,
     LOG(debug) << "\tFound comp_dir substitution " << it->second;
     did_work = process_compilation_units(aux_file_reader, alt_file_reader,
                                          trace_relative_name, original_file_name,
-                                         it->second, chosen_debug_dir, chosen_src_dir,
+                                         it->second, comp_dir_substitutions,
+                                         chosen_debug_dir, chosen_src_dir,
                                          file_names, dwos, dir_exists_cache);
   } else {
     LOG(debug) << "\tNo comp_dir substitution found";
     did_work = process_compilation_units(aux_file_reader, alt_file_reader,
                                          trace_relative_name, original_file_name,
-                                         {}, chosen_debug_dir, chosen_src_dir,
+                                         {}, comp_dir_substitutions,
+                                         chosen_debug_dir, chosen_src_dir,
                                          file_names, dwos, dir_exists_cache);
   }
 
@@ -781,7 +789,7 @@ static bool try_debuglink_file(ElfFileReader& trace_file_reader,
                                const string& trace_relative_name,
                                const string& original_file_name,
                                set<string>* file_names, const string& aux_file_name,
-                               const map<string, string>& comp_dir_substitutions,
+                               map<string, string>& comp_dir_substitutions,
                                unique_ptr<DebugDirManager>& debug_dirs,
                                DebugDirs& dd,
                                vector<DwoInfo>* dwos,
@@ -1025,7 +1033,7 @@ struct OutputCompDirSubstitution {
 
 template<class iterable>
 static int sources(const iterable& binary_file_names,
-                   const map<string, string>& comp_dir_substitutions,
+                   map<string, string>& comp_dir_substitutions,
                    unique_ptr<DebugDirManager>& debug_dirs,
                    bool is_explicit) {
   vector<string> relevant_binary_names;
@@ -1073,13 +1081,15 @@ static int sources(const iterable& binary_file_names,
       output_comp_dir_substitutions.push_back({ trace_relative_name, it->second });
       has_source_files = process_compilation_units(reader, altlink_reader.get(),
                                                    trace_relative_name, pair.second,
-                                                   it->second, NULL, NULL, &file_names, &dwos,
+                                                   it->second, comp_dir_substitutions,
+                                                   NULL, NULL, &file_names, &dwos,
                                                    dir_exists_cache);
     } else {
       LOG(debug) << "\tNo comp_dir substitution found";
       has_source_files = process_compilation_units(reader, altlink_reader.get(),
                                                    trace_relative_name, pair.second,
-                                                   {}, NULL, NULL, &file_names, &dwos,
+                                                   {}, comp_dir_substitutions,
+                                                   NULL, NULL, &file_names, &dwos,
                                                    dir_exists_cache);
     }
     /* If the original binary had source files, force the inclusion of any debugaltlink
